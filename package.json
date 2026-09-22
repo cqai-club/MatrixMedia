@@ -39,7 +39,8 @@
     "test:pick-release-installer": "node scripts/test-pick-release-installer.js",
     "test:publish-abnormal": "node scripts/test-publish-abnormal.js",
     "test:fail-screenshot": "node scripts/test-fail-screenshot.js",
-    "test:publisher-worker": "node scripts/test-publisher-worker.js",
+    "test:fqsp-publish-mode": "node scripts/test-fqsp-publish-mode.js",
+    "test:publisher-worker": "node scripts/test-publisher-worker.js && node scripts/test-fqsp-publish-mode.js && node scripts/test-xhs-publish-policy.js && node scripts/test-proxy-config.js && node scripts/test-fail-screenshot.js && node scripts/test-publish-draft-args.js",
     "build:publisher-worker:universal": "yarn rm:build && yarn build:dir && electron-builder --config electron-builder.publisher.yml --mac dir --universal"
   },
   "build": {

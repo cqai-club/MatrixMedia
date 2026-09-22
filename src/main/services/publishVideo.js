@@ -139,6 +139,11 @@ async function runSingleFilePublishInner(
     useragent: cfg.useragent,
     partition: v.partition,
     phone: derivePhoneForRecord(v),
+    // The e宝 Worker owns UUID-based Chromium partitions and may carry an
+    // imported per-account proxy. Keep those values intact through the shared
+    // upload pipeline instead of applying the legacy phone-name normalization.
+    publisherWorker: Boolean(v.publisherWorker),
+    proxyOverride: v.proxyOverride,
     filePath: resolvedFile,
     pt: v.platform,
     useRealBrowser: Boolean(v.useRealBrowser),

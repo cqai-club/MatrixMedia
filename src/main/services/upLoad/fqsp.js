@@ -424,42 +424,47 @@ async function ensureAllPlatformSwitchesChecked(page) {
   );
 }
 
-async function waitForPublishButtonReady(page, timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const ready = await page.evaluate(() => {
-      const buttons = [...document.querySelectorAll("button")];
-      const btn = buttons.find(b =>
-        String(b.textContent || "")
-          .replace(/\s+/g, "")
-          .includes("一键发布")
-      );
-      return !!(btn && !btn.disabled);
-    });
-    if (ready) return;
-    await page.waitForTimeout(500);
-  }
+export function fqspActionLabels(isDraftMode) {
+  return isDraftMode ? ["存草稿", "保存草稿", "暂存"] : ["一键发布"];
 }
 
-async function clickOneClickPublish(page) {
-  const clicked = await page.evaluate(() => {
+async function waitForActionButtonReady(page, isDraftMode, timeoutMs = 15000) {
+  const labels = fqspActionLabels(isDraftMode);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const ready = await page.evaluate(targets => {
+      const buttons = [...document.querySelectorAll("button")];
+      const btn = buttons.find(b => {
+        const text = String(b.textContent || "").replace(/\s+/g, "");
+        return targets.some(label => text === label || text.includes(label));
+      });
+      return !!(btn && !btn.disabled);
+    }, labels);
+    if (ready) return true;
+    await page.waitForTimeout(500);
+  }
+  throw new Error(`未找到可点击的「${labels.join("/ ")}」按钮`);
+}
+
+async function clickFqspAction(page, isDraftMode) {
+  const labels = fqspActionLabels(isDraftMode);
+  const clicked = await page.evaluate(targets => {
     const buttons = [...document.querySelectorAll("button")];
-    const btn = buttons.find(b =>
-      String(b.textContent || "")
-        .replace(/\s+/g, "")
-        .includes("一键发布")
-    );
+    const btn = buttons.find(b => {
+      const text = String(b.textContent || "").replace(/\s+/g, "");
+      return targets.some(label => text === label || text.includes(label));
+    });
     if (!btn || btn.disabled) return false;
     btn.scrollIntoView({ block: "center", inline: "center" });
     btn.click();
     return true;
-  });
+  }, labels);
   if (!clicked) {
-    throw new Error("未找到可点击的「一键发布」按钮");
+    throw new Error(`未找到可点击的「${labels.join("/ ")}」按钮`);
   }
 }
 
-async function waitForFqspPublishResult(page) {
+async function waitForFqspPublishResult(page, isDraftMode) {
   await page.waitForTimeout(3000);
 
   if (isLoginPageUrl(page.url())) {
@@ -481,7 +486,7 @@ async function waitForFqspPublishResult(page) {
         );
       };
       const errorReg = /失败|错误|异常|请重试|未通过|不能为空/;
-      const successReg = /发布成功|提交成功|操作成功/;
+      const successReg = /发布成功|提交成功|操作成功|保存成功|草稿已保存|已存草稿/;
       const noticeSelectors = [
         ".arco-message",
         ".arco-notification",
@@ -515,6 +520,8 @@ async function waitForFqspPublishResult(page) {
 
 export default async function (page, data, window, event) {
   let publishStage = "初始化";
+  const isDraftMode =
+    data.publishMode === "draft" || data.publishToDraft === true;
 
   try {
     if (isLoginPageUrl(page.url())) {
@@ -534,23 +541,28 @@ export default async function (page, data, window, event) {
     publishStage = "等待上传完成";
     await waitForFqspUploadComplete(page);
 
-    publishStage = "勾选发布平台";
-    await ensureAllPlatformSwitchesChecked(page);
+    if (!isDraftMode) {
+      publishStage = "勾选发布平台";
+      await ensureAllPlatformSwitchesChecked(page);
+    }
 
-    publishStage = "等待一键发布可点击";
-    await waitForPublishButtonReady(page);
+    publishStage = isDraftMode ? "等待保存草稿可点击" : "等待一键发布可点击";
+    await waitForActionButtonReady(page, isDraftMode);
 
-    publishStage = "点击一键发布";
-    await clickOneClickPublish(page);
+    publishStage = isDraftMode ? "点击保存草稿" : "点击一键发布";
+    await clickFqspAction(page, isDraftMode);
 
-    publishStage = "等待发布结果";
-    await waitForFqspPublishResult(page);
+    publishStage = isDraftMode ? "等待草稿结果" : "等待发布结果";
+    await waitForFqspPublishResult(page, isDraftMode);
 
-    console.log("[fqsp] 番茄视频发布成功");
+    console.log(isDraftMode ? "[fqsp] 番茄视频已保存草稿" : "[fqsp] 番茄视频发布成功");
     event.reply("puppeteerFile-done", {
       ...data,
       status: true,
-      message: "上传成功",
+      message: isDraftMode ? "保存草稿成功" : "上传成功",
+      outcome: isDraftMode ? "draft_saved" : "publish_success",
+      publishMode: isDraftMode ? "draft" : "publish",
+      publishToDraft: isDraftMode,
       url: VIDEO_LIST_URL,
     });
     maybeClosePublishWindow(data, window);

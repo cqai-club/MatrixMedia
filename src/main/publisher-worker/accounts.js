@@ -52,6 +52,10 @@ function accountFiles(directory) {
   return fs.readdirSync(directory).filter(file => file.endsWith(".json")).sort();
 }
 
+function legacyPartition(item) {
+  return item.partition || `persist:${String(item.phone).split("-")[0]}${item.pt}`;
+}
+
 function readLegacyAccounts(directory) {
   const rows = [];
   for (const file of accountFiles(directory)) {
@@ -60,7 +64,15 @@ function readLegacyAccounts(directory) {
       if (Array.isArray(parsed)) rows.push(...parsed);
     } catch { /* malformed legacy buckets are skipped */ }
   }
-  return rows.filter(item => item && item.phone && PT_TO_PLATFORM[item.pt]);
+  const unique = new Map();
+  for (const item of rows) {
+    if (!item || !item.phone || !PT_TO_PLATFORM[item.pt]) continue;
+    const platform = PT_TO_PLATFORM[item.pt];
+    const partition = legacyPartition(item);
+    // Newer daily account buckets override older duplicate snapshots.
+    unique.set(`${platform}\0${partition}`, item);
+  }
+  return [...unique.values()];
 }
 
 function runningFromSingletonLock(profile) {
@@ -157,7 +169,12 @@ export class PublisherAccounts {
       phone: account.id,
       pt: account.pt,
       proxyOverride: account.proxy,
+      preservePartition: true,
     });
+    // Another RPC may have accepted a publish while proxy setup yielded.
+    // Re-check before creating a window so login/dashboard and upload never
+    // share this account session concurrently.
+    this.assertIdle(account.id);
     const cfg = ptConfig[account.pt];
     const win = new BrowserWindow({
       width: 1200, height: 800, title, autoHideMenuBar: true,
@@ -184,6 +201,9 @@ export class PublisherAccounts {
   }
 
   importApply() {
+    if (this.busy()) {
+      throw new PublisherProtocolError("publisher-busy", "仍有发布任务排队或执行中，请稍后再导入账号");
+    }
     const preview = this.importPreview();
     if (preview.running) throw new PublisherProtocolError("matrixmedia-running", "请先完全退出独立 MatrixMedia，再重新导入");
     const rows = readLegacyAccounts(preview.sourceData);
@@ -194,7 +214,7 @@ export class PublisherAccounts {
     try {
       const prepared = rows.map(item => {
         const platform = PT_TO_PLATFORM[item.pt];
-        const partition = item.partition || `persist:${String(item.phone).split("-")[0]}${item.pt}`;
+        const partition = legacyPartition(item);
         const existing = this.store.findImported(platform, partition);
         if (existing) return { item, platform, partition, existing };
         const suffix = partition.replace(/^persist:/u, "");
@@ -207,18 +227,30 @@ export class PublisherAccounts {
         return { item, platform, partition, suffix, staged, hasSession: fs.existsSync(staged) };
       });
       fs.mkdirSync(destinationPartitions, { recursive: true });
-      for (const entry of prepared) {
-        if (entry.existing) { imported.push(publicAccount(entry.existing)); continue; }
-        if (entry.hasSession) {
-          const destination = path.join(destinationPartitions, entry.suffix);
-          if (!fs.existsSync(destination)) fs.renameSync(entry.staged, destination);
+      const installed = [];
+      const added = [];
+      try {
+        for (const entry of prepared) {
+          if (entry.existing) { imported.push(publicAccount(entry.existing)); continue; }
+          if (entry.hasSession) {
+            const destination = path.join(destinationPartitions, entry.suffix);
+            if (!fs.existsSync(destination)) {
+              fs.renameSync(entry.staged, destination);
+              installed.push(destination);
+            }
+          }
+          const account = this.store.addAccount({
+            displayName: String(entry.item.phone), platform: entry.platform, pt: entry.item.pt,
+            partition: entry.partition, importedFrom: "MatrixMedia", proxy: entry.item.proxy,
+            loginState: "unknown",
+          });
+          added.push(account.id);
+          imported.push(publicAccount(account));
         }
-        const account = this.store.addAccount({
-          displayName: String(entry.item.phone), platform: entry.platform, pt: entry.item.pt,
-          partition: entry.partition, importedFrom: "MatrixMedia", proxy: entry.item.proxy,
-          loginState: "unknown",
-        });
-        imported.push(publicAccount(account));
+      } catch (error) {
+        for (const id of added.reverse()) this.store.deleteAccount(id);
+        for (const destination of installed.reverse()) fs.rmSync(destination, { recursive: true, force: true });
+        throw error;
       }
       return { imported };
     } finally {
@@ -234,6 +266,15 @@ export class PublisherAccounts {
 
   assertIdle(id) {
     if (this.busy(id)) throw new PublisherProtocolError("account-busy", "当前账号正在提交内容，请稍后再试");
+  }
+
+  assertNoOpenWindow(id) {
+    const account = this.require(id);
+    const win = this.windows.get(account.partition);
+    if (win && win.isDestroyed()) this.windows.delete(account.partition);
+    else if (win) {
+      throw new PublisherProtocolError("account-window-open", "请先关闭该账号的登录页或平台后台，再提交发布");
+    }
   }
 
   dispose() {

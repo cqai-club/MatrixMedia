@@ -28,6 +28,8 @@ const ROOT_NAME = "MatrixMedia";
  * 非 Electron 环境（单测）回退到模块同级目录，便于直接跑 node 脚本。
  */
 export function getFailScreenshotDir() {
+  const configured = String(process.env.MATRIXMEDIA_DATA_DIR || "").trim();
+  if (configured) return path.join(path.resolve(configured), DIR_NAME);
   try {
     // eslint-disable-next-line global-require
     const { app } = require("electron");

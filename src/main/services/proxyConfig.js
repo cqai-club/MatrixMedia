@@ -72,12 +72,22 @@ function ensureProxyLoginHandler(ses, partition) {
 }
 
 /**
+ * Keep Worker UUID/imported partitions byte-for-byte while retaining the
+ * legacy GUI convention that strips a display suffix after `-`.
+ */
+export function resolveProxyPartition(partition, preservePartition = false) {
+  const rawPartition = String(partition || "");
+  return preservePartition ? rawPartition : rawPartition.split("-")[0];
+}
+
+/**
  * @param {object} options
  * @param {Electron.Session} [options.electronSession]
  * @param {string} options.partition
  * @param {string} [options.phone]
  * @param {string} [options.pt]
  * @param {{ enabled?: boolean, url?: string }} [options.proxyOverride]
+ * @param {boolean} [options.preservePartition]
  * @returns {Promise<{ applied: boolean, mode: string, display?: string, error?: string }>}
  */
 export async function applyAccountProxyToSession({
@@ -86,8 +96,9 @@ export async function applyAccountProxyToSession({
   phone,
   pt,
   proxyOverride,
+  preservePartition = false,
 }) {
-  const partitionKey = String(partition || "").split("-")[0];
+  const partitionKey = resolveProxyPartition(partition, preservePartition);
   if (!partitionKey) {
     return { applied: false, mode: "direct", error: "partition 无效" };
   }

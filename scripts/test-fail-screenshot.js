@@ -42,6 +42,7 @@ buildSync({
 const {
   buildFailScreenshotName,
   capturePublishFailureScreenshot,
+  getFailScreenshotDir,
   readFailScreenshotDataUrl,
   pruneFailScreenshots,
   FAIL_SCREENSHOT_RETENTION_DAYS,
@@ -58,6 +59,17 @@ function tmpDir(name) {
 }
 
 (async () => {
+  const previousDataRoot = process.env.MATRIXMEDIA_DATA_DIR;
+  const isolatedDataRoot = tmpDir("worker-data");
+  process.env.MATRIXMEDIA_DATA_DIR = isolatedDataRoot;
+  assert.strictEqual(
+    getFailScreenshotDir(),
+    path.join(isolatedDataRoot, "fail-screenshots"),
+    "Worker 截图必须留在独立数据目录"
+  );
+  if (previousDataRoot === undefined) delete process.env.MATRIXMEDIA_DATA_DIR;
+  else process.env.MATRIXMEDIA_DATA_DIR = previousDataRoot;
+
   // 1. 文件名
   const name = buildFailScreenshotName(
     { pt: "小红书", phone: "1380000-1" },

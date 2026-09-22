@@ -47,6 +47,10 @@ Supervisor 通过 stdin/stdout 使用逐行 JSON（NDJSON）。stdout 只写响�
 - 未开始的 `queued` 提交在 Worker 重启后继续。
 - 已进入 `running` 但被中断的提交转为内部 `unknown`，不会自动重发。
 - Worker 内部全局串行执行，且 e宝模式将单次尝试限制为 1。
+- 登录页/平台后台与同账号的排队、校验或执行任务互斥；发布窗口在 Worker 模式下保持隐藏。
+- 小红书固定使用内置 Electron Chromium；番茄视频区分“一键发布”和“保存草稿”，草稿模式绝不回退为直接发布。
+- UUID 或导入账号的 partition 不经过旧 GUI 的手机号后缀截断，账号代理随该 partition 一起复用。
 - 导入独立 MatrixMedia 账号时先复制到临时目录，再以同文件系统重命名方式安装 session；源目录不移动、不删除。
+- 失败截图和 MatrixMedia 内部发布记录写入 `--data-dir` 下的隔离目录，不污染独立 MatrixMedia 数据。
 
 本协议是 e宝与内置 Helper 之间的私有本机接口，不替代 MatrixMedia 原有 CLI、HTTP API 或 MCP 契约。

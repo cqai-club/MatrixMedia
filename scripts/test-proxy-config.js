@@ -78,7 +78,7 @@ const {
 (() => {
   const disabled = normalizeAccountProxy({ enabled: false, url: "" });
   assert.strictEqual(disabled.ok, true);
-  assert.strictEqual(disabled.value.enabled, false);
+  assert.deepStrictEqual(disabled.value.proxies, []);
 })();
 
 (() => {
@@ -92,7 +92,7 @@ const {
     url: "http://127.0.0.1:7890",
   });
   assert.strictEqual(enabled.ok, true);
-  assert.strictEqual(enabled.value.url, "http://127.0.0.1:7890");
+  assert.strictEqual(enabled.value.proxies[0].url, "http://127.0.0.1:7890");
 })();
 
 (() => {
@@ -108,7 +108,12 @@ const {
   assert.strictEqual(getAccountProxyDisplay({ enabled: false, url: "http://a:1" }), "");
 })();
 
-const { findAccountRecord } = require(proxyConfigBundle);
+const { findAccountRecord, resolveProxyPartition } = require(proxyConfigBundle);
 assert.strictEqual(typeof findAccountRecord, "function");
+assert.strictEqual(resolveProxyPartition("persist:legacy-抖音"), "persist:legacy");
+assert.strictEqual(
+  resolveProxyPartition("persist:imported-account-1", true),
+  "persist:imported-account-1"
+);
 
 console.log("test-proxy-config: all assertions passed");

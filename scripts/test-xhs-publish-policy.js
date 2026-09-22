@@ -33,6 +33,22 @@ assert.deepStrictEqual(
 
 assert.deepStrictEqual(
   applyXhsConservativePublishOptions({
+    pt: "小红书",
+    show: false,
+    closeWindowAfterPublish: true,
+    publisherWorker: true,
+  }),
+  {
+    pt: "小红书",
+    show: false,
+    closeWindowAfterPublish: true,
+    publisherWorker: true,
+    xhsConservativeMode: true,
+  }
+);
+
+assert.deepStrictEqual(
+  applyXhsConservativePublishOptions({
     pt: "抖音",
     show: false,
     closeWindowAfterPublish: true,
@@ -46,6 +62,10 @@ assert.deepStrictEqual(
 
 assert.strictEqual(getPublishAttemptLimit({ pt: "小红书" }, 5), 1);
 assert.strictEqual(getPublishAttemptLimit({ pt: "快手" }, 5), 5);
+assert.strictEqual(
+  getPublishAttemptLimit({ pt: "快手", publishOptions: { maxAttempts: 1 } }, 5),
+  1
+);
 
 assert.strictEqual(getXhsSecondClickDelayMs(() => 0), 5000);
 assert.strictEqual(getXhsSecondClickDelayMs(() => 1), 10000);

@@ -30,7 +30,8 @@ export class PublisherWorkerService {
   constructor(root) {
     this.store = new PublisherStore(path.join(root, "state"));
     this.busyAccounts = new Set();
-    this.accounts = new PublisherAccounts(this.store, id => this.busyAccounts.has(id));
+    this.validatingAccounts = new Set();
+    this.accounts = new PublisherAccounts(this.store, id => this.accountBusy(id));
     this.running = false;
     this.stopping = false;
   }
@@ -42,6 +43,17 @@ export class PublisherWorkerService {
 
   health() {
     return { ready: true, busy: this.running, queued: this.store.queued().length };
+  }
+
+  accountBusy(id) {
+    if (!id) {
+      return this.running || this.validatingAccounts.size > 0 || this.store.queued().length > 0;
+    }
+    if (this.busyAccounts.has(id) || this.validatingAccounts.has(id)) return true;
+    return this.store.submissionsRaw().some(submission =>
+      (submission.state === "queued" || submission.state === "running") &&
+      submission.targets.some(target => target.accountId === id)
+    );
   }
 
   async createSubmission(params) {
@@ -64,25 +76,31 @@ export class PublisherWorkerService {
     if (new Set(selected.map(account => account.platform)).size !== selected.length) {
       throw new PublisherProtocolError("invalid-submission", "同一平台一次只能选择一个账号");
     }
-    for (const account of selected) {
-      const checked = await this.accounts.check({ id: account.id });
-      if (checked.loginState !== "logged-in") {
-        throw new PublisherProtocolError("account-login-required", `${account.displayName}（${account.pt}）需要重新登录`);
+    selected.forEach(account => this.accounts.assertNoOpenWindow(account.id));
+    selected.forEach(account => this.validatingAccounts.add(account.id));
+    try {
+      for (const account of selected) {
+        const checked = await this.accounts.check({ id: account.id });
+        if (checked.loginState !== "logged-in") {
+          throw new PublisherProtocolError("account-login-required", `${account.displayName}（${account.pt}）需要重新登录`);
+        }
       }
+      const creativeStatement = String(params.creativeStatement || "none");
+      if (!CREATIVE_STATEMENTS.has(creativeStatement)) throw new PublisherProtocolError("invalid-submission", "内容声明无效");
+      const submission = this.store.createSubmission({
+        workId: text(params.workId, "作品 ID", 200), file,
+        title: text(params.title, "标题", 120),
+        description: String(params.description || "").trim().slice(0, 2000),
+        shortTitle: String(params.shortTitle || "").trim().slice(0, 32),
+        tags: tags(params.tags),
+        creativeStatement,
+        mode,
+      }, selected);
+      this.kick();
+      return { accepted: true, submission: publicSubmission(submission) };
+    } finally {
+      selected.forEach(account => this.validatingAccounts.delete(account.id));
     }
-    const creativeStatement = String(params.creativeStatement || "none");
-    if (!CREATIVE_STATEMENTS.has(creativeStatement)) throw new PublisherProtocolError("invalid-submission", "内容声明无效");
-    const submission = this.store.createSubmission({
-      workId: text(params.workId, "作品 ID", 200), file,
-      title: text(params.title, "标题", 120),
-      description: String(params.description || "").trim().slice(0, 2000),
-      shortTitle: String(params.shortTitle || "").trim().slice(0, 32),
-      tags: tags(params.tags),
-      creativeStatement,
-      mode,
-    }, selected);
-    this.kick();
-    return { accepted: true, submission: publicSubmission(submission) };
   }
 
   kick() {
@@ -121,6 +139,7 @@ export class PublisherWorkerService {
             closeWindowAfterPublish: true,
             useRealBrowser: false,
             publisherWorker: true,
+            proxyOverride: account.proxy,
             publishOptions: { maxAttempts: 1 },
           }));
           request.sort((left, right) => left.platform === "视频号" ? -1 : right.platform === "视频号" ? 1 : 0);

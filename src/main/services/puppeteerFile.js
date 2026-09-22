@@ -251,7 +251,9 @@ export function normalizePuppeteerVideoTaskData(data) {
 async function doUpload(data, transport, queueDone, runtimeTask) {
   data = applyXhsConservativePublishOptions(data);
   normalizePuppeteerVideoTaskData(data);
-  data.partition = data.partition.split("-")[0];
+  // Legacy GUI payloads sometimes append a display suffix after `-`. Worker
+  // partitions are stable UUID/session identities and must never be truncated.
+  if (!data.publisherWorker) data.partition = data.partition.split("-")[0];
   const isXhsTask = isXhsPlatform(data.pt);
   const maxRetries = getPublishAttemptLimit(data, 5);
   let currentAttempt = 0;
@@ -399,6 +401,8 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         partition: data.partition,
         phone: data.phone,
         pt: data.pt,
+        proxyOverride: data.proxyOverride,
+        preservePartition: Boolean(data.publisherWorker),
       });
 
       // 2.5 关闭上一次遗留的 Chrome 实例，释放 userDataDir 的 profile 锁。
@@ -601,6 +605,8 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         partition: data.partition,
         phone: data.phone,
         pt: data.pt,
+        proxyOverride: data.proxyOverride,
+        preservePartition: Boolean(data.publisherWorker),
       });
       if (proxyResult.applied) {
         console.log(
@@ -611,7 +617,9 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       browser = await pie.connect(app, puppeteer);
       activeBrowser = browser;
       win = new BrowserWindow({
-        show: isXhsTask
+        show: data.publisherWorker
+          ? false
+          : isXhsTask
           ? true
           : data.mmCliSuppressWindow
           ? false
@@ -623,7 +631,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           partition: data.partition,
           nodeIntegration: false,
           contextIsolation: true,
-          devTools: true,
+          devTools: !data.publisherWorker,
         },
       });
       activeWin = win;

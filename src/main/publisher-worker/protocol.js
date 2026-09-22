@@ -24,17 +24,22 @@ export function createFrameDecoder(onFrame, onError) {
   let pending = "";
   return chunk => {
     pending += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
-    if (Buffer.byteLength(pending, "utf8") > MAX_FRAME_BYTES) {
-      pending = "";
-      onError(new PublisherProtocolError("frame-too-large", "Publisher Worker 请求超过 1 MB"));
-      return;
-    }
     for (;;) {
       const newline = pending.indexOf("\n");
-      if (newline < 0) break;
+      if (newline < 0) {
+        if (Buffer.byteLength(pending, "utf8") > MAX_FRAME_BYTES) {
+          pending = "";
+          onError(new PublisherProtocolError("frame-too-large", "Publisher Worker 请求超过 1 MB"));
+        }
+        break;
+      }
       const line = pending.slice(0, newline).trim();
       pending = pending.slice(newline + 1);
       if (!line) continue;
+      if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES) {
+        onError(new PublisherProtocolError("frame-too-large", "Publisher Worker 请求超过 1 MB"));
+        continue;
+      }
       try {
         onFrame(JSON.parse(line));
       } catch {
