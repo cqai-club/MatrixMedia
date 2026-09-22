@@ -28,7 +28,11 @@ const LOGIN_RULES = {
       "access-token-creator.xiaohongshu.com", "customer-sso-sid",
       "galaxy_creator_session_id", "x-user-id-creator.xiaohongshu.com",
     ];
-    const hits = names.map(name => cookies.find(item => item.name === name && item.value));
+    // Keep MatrixMedia's existing login rule: every creator cookie must carry
+    // a real expiry so a stale/session-only partial login is not accepted.
+    const hits = names.map(name => cookies.find(item =>
+      item.name === name && item.value && Number.isFinite(item.expirationDate)
+    ));
     if (hits.some(item => !item)) return null;
     return hits.reduce((earliest, item) => {
       if (!earliest || !item.expirationDate) return earliest || item;
@@ -158,6 +162,15 @@ export class PublisherAccounts {
     }
     const existing = this.windows.get(account.partition);
     if (existing && !existing.isDestroyed()) {
+      // Login and dashboard intentionally share one account window/session.
+      // Reusing the window must still navigate to the action the user chose.
+      if (existing.webContents.getURL() !== url) {
+        try {
+          await existing.loadURL(url);
+        } catch (error) {
+          console.warn("[publisher-worker] 账号窗口导航失败:", error && error.message);
+        }
+      }
       if (existing.isMinimized()) existing.restore();
       existing.focus();
       return { ok: true, reused: true };
@@ -184,11 +197,17 @@ export class PublisherAccounts {
     win.on("closed", () => { if (this.windows.get(account.partition) === win) this.windows.delete(account.partition); });
     win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     if (cfg.useragent) win.webContents.setUserAgent(cfg.useragent);
-    await win.loadURL(url);
+    try {
+      await win.loadURL(url);
+    } catch (error) {
+      // Creator sites frequently abort the initial navigation while redirecting
+      // to their login host. MatrixMedia treats that as a usable open window.
+      console.warn("[publisher-worker] 账号窗口加载发生重定向:", error && error.message);
+    }
     return { ok: true, reused: false };
   }
 
-  importPreview() {
+  legacyImportSource() {
     const sourceData = path.join(app.getPath("documents"), "MatrixMedia", "data", "account");
     const sourceProfile = path.join(app.getPath("appData"), "matrix-video");
     const rows = readLegacyAccounts(sourceData);
@@ -200,11 +219,16 @@ export class PublisherAccounts {
     };
   }
 
+  importPreview() {
+    const { running, accounts } = this.legacyImportSource();
+    return { running, accounts };
+  }
+
   importApply() {
     if (this.busy()) {
       throw new PublisherProtocolError("publisher-busy", "仍有发布任务排队或执行中，请稍后再导入账号");
     }
-    const preview = this.importPreview();
+    const preview = this.legacyImportSource();
     if (preview.running) throw new PublisherProtocolError("matrixmedia-running", "请先完全退出独立 MatrixMedia，再重新导入");
     const rows = readLegacyAccounts(preview.sourceData);
     const imported = [];
