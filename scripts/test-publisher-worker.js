@@ -11,6 +11,11 @@ const root = path.join(__dirname, "..");
 (async () => {
   const protocol = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/protocol.js")));
   const storeModule = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/store.js")));
+  const capabilities = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/capabilities.js")));
+  const packages = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/content-package.js")));
+  assert.deepStrictEqual(capabilities.platformCapabilities({}).find(item => item.platform === "juejin").contentTypes, []);
+  assert.deepStrictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "juejin:article" }).find(item => item.platform === "juejin").modes.article, ["publish", "draft"]);
+  assert.deepStrictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "xhs:image-note" }).find(item => item.platform === "xhs").modes["image-note"], ["publish", "draft"]);
   const frames = [];
   const errors = [];
   const decode = protocol.createFrameDecoder(frame => frames.push(frame), error => errors.push(error));
@@ -36,6 +41,8 @@ const root = path.join(__dirname, "..");
     const submission = store.createSubmission({
       workId: "work-1", file: "/tmp/video.mp4", title: "标题", mode: "publish",
     }, [account]);
+    assert.strictEqual(store.listSubmissions()[0].contentType, "video");
+    assert.strictEqual(store.listSubmissions()[0].contentId, "work-1");
     store.updateAccount(account.id, { displayName: "已改名" });
     assert.strictEqual(store.account(account.id).partition, originalPartition);
     const second = store.addAccount({ displayName: "第二账号", platform: "dy", pt: "抖音" });
@@ -47,6 +54,27 @@ const root = path.join(__dirname, "..");
     assert.strictEqual(restored.listSubmissions()[0].targets[0].accountName, "测试账号");
     assert.ok(!Object.prototype.hasOwnProperty.call(restored.listSubmissions()[0], "state"));
     assert.ok(!Object.prototype.hasOwnProperty.call(restored.listSubmissions()[0], "file"));
+    assert.strictEqual(restored.submissionsState.schemaVersion, 2);
+
+    const contentId = "11111111-1111-4111-8111-111111111111";
+    const source = path.join(temporary, "contents", contentId);
+    fs.mkdirSync(path.join(source, "assets"), { recursive: true });
+    const assetId = "22222222-2222-4222-8222-222222222222";
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]);
+    fs.writeFileSync(path.join(source, "assets", assetId), png);
+    const manifest = {
+      id: contentId, contentType: "article", revision: 3, title: "文章",
+      body: "# 标题", summary: "", tags: [], creativeStatement: "none",
+      assets: [{ id: assetId, mime: "image/png", bytes: png.length }],
+      coverAssetId: assetId, platformFields: { juejin: { category: "前端" } },
+    };
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify(manifest));
+    const checked = packages.readContentPackage(source, contentId, 3, "article");
+    const snapshotId = "33333333-3333-4333-8333-333333333333";
+    const snapshot = packages.captureContentPackage(checked, path.join(temporary, "snapshots"), snapshotId);
+    fs.rmSync(source, { recursive: true });
+    assert.strictEqual(packages.readContentPackage(snapshot, contentId, 3, "article", false).manifest.body, "# 标题");
+    assert.throws(() => packages.readContentPackage(snapshot, contentId, 4, "article", false), /修订不匹配/u);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

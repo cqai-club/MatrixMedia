@@ -46,11 +46,12 @@ async function main() {
   service.start();
   const handlers = {
     "system.handshake": () => ({
-      protocolVersion: 1,
-      workerVersion: "0.1.0",
-      platforms: ["dy", "sph", "xhs", "blbl", "ks", "tt", "bjh", "fqsp"],
+      protocolVersion: 2,
+      workerVersion: "0.2.0",
+      platforms: service.capabilities().map(item => item.platform),
       modes: ["publish", "draft"],
     }),
+    "system.capabilities": () => service.capabilities(),
     "system.health": () => service.health(),
     "system.shutdown": () => {
       setImmediate(() => { void service.dispose().finally(() => app.quit()); });

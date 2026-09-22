@@ -35,12 +35,15 @@ Supervisor 通过 stdin/stdout 使用逐行 JSON（NDJSON）。stdout 只写响�
 公开方法：
 
 - `system.handshake`、`system.health`、`system.shutdown`
+- `system.capabilities`（协议 v2，按平台和内容类型声明可提交模式）
 - `accounts.list/create/update/delete`
 - `accounts.openLogin/checkLogin/openDashboard`
 - `accounts.importPreview/importApply`
 - `submissions.create/list`
 
-账号响应不含 Cookie 或 Chromium partition。提交记录只暴露提交时间、作品、模式和账号名称快照，不暴露内部执行状态。发布前会同步校验所有目标账号登录态；持久化成功后才返回 `accepted: true`。
+账号响应不含 Cookie 或 Chromium partition。提交记录只暴露提交时间、内容类型、内容 ID、模式和账号名称快照，不暴露内部执行状态。schema v1 视频记录迁移到 v2 时保持原 workId 和历史。发布前会同步校验所有目标账号登录态；文章、图文内容包先复制为不可变快照，再持久化，成功后才返回 `accepted: true`。
+
+文章和图文适配器采用能力门控。未完成真实平台验收时默认只开放原八个平台的视频能力；开发验收可设置 `EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES=juejin:article,blbl:article,xhs:image-note`。正式打开能力之前必须完成登录、草稿、一次受控直接发布与同 session 后台确认。掘金和 B站专栏当前只接受封面素材，正文图片适配尚未验收，提交前会明确拒绝。
 
 ## 恢复语义
 

@@ -223,6 +223,29 @@ async function waitForPostConfirmResult(page) {
   }
 }
 
+async function savePublisherDraft(page) {
+  // Never fall through to the publish button when the caller asked for a draft.
+  // The editor can autosave or expose a dedicated save control depending on
+  // the current Juejin UI. Require observable confirmation before reporting it.
+  const clicked = await page.evaluate(() => {
+    const controls = Array.from(document.querySelectorAll("button"));
+    const button = controls.find(item => /^(保存草稿|存草稿|保存)$/u.test(String(item.textContent || "").trim()));
+    if (!button) return false;
+    button.click();
+    return true;
+  });
+  await page.waitForTimeout(2500);
+  const confirmed = await page.evaluate(wasClicked => {
+    const url = location.pathname;
+    const status = String(document.body?.textContent || "");
+    return /\/editor\/drafts\/[^/]+/u.test(url) && !url.endsWith("/new")
+      && (wasClicked || /已保存|保存成功|自动保存/u.test(status));
+  }, clicked);
+  if (!confirmed) {
+    throw new Error(clicked ? "未确认掘金草稿已保存" : "未找到掘金保存草稿按钮或自动保存确认");
+  }
+}
+
 export default async function (page, data, window, event) {
   let publishStage = "初始化";
 
@@ -237,6 +260,17 @@ export default async function (page, data, window, event) {
     publishStage = "填写正文";
     await page.waitForSelector(EDITOR_SELECTOR, { visible: true, timeout: WAIT_SELECTOR_APPEAR_MS });
     await setCodeMirrorContent(page, content);
+    if (data.publishToDraft === true) {
+      publishStage = "保存草稿";
+      await savePublisherDraft(page);
+      event.reply("puppeteerFile-done", {
+        ...data,
+        status: true,
+        message: "已转存掘金草稿，请到后台确认",
+      });
+      maybeClosePublishWindow(data, window);
+      return;
+    }
     publishStage = "打开发布弹窗";
     await page.waitForSelector(PUBLISH_BUTTON_SELECTOR, { visible: true, timeout: WAIT_SELECTOR_APPEAR_MS });
     console.log("这里是打开发布弹窗");

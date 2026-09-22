@@ -34,7 +34,9 @@ export function publicSubmission(submission) {
   return {
     id: submission.id,
     createdAt: submission.createdAt,
-    workId: submission.workId,
+    contentId: submission.contentId || submission.workId,
+    contentType: submission.contentType || "video",
+    ...(submission.workId ? { workId: submission.workId } : {}),
     title: submission.title,
     mode: submission.mode,
     targets: submission.targets.map(target => ({
@@ -51,10 +53,22 @@ export class PublisherStore {
     this.accountsFile = path.join(this.root, "accounts.json");
     this.submissionsFile = path.join(this.root, "submissions.json");
     fs.mkdirSync(this.root, { recursive: true });
-    this.accountsState = readJson(this.accountsFile, { schemaVersion: 1, accounts: [] });
-    this.submissionsState = readJson(this.submissionsFile, { schemaVersion: 1, submissions: [] });
+    this.accountsState = readJson(this.accountsFile, { schemaVersion: 2, accounts: [] });
+    this.submissionsState = readJson(this.submissionsFile, { schemaVersion: 2, submissions: [] });
     if (!Array.isArray(this.accountsState.accounts)) this.accountsState.accounts = [];
     if (!Array.isArray(this.submissionsState.submissions)) this.submissionsState.submissions = [];
+    if (this.accountsState.schemaVersion !== 2) {
+      this.accountsState.schemaVersion = 2;
+      this.saveAccounts();
+    }
+    if (this.submissionsState.schemaVersion !== 2 || this.submissionsState.submissions.some(item => !item.contentType || !item.contentId)) {
+      for (const item of this.submissionsState.submissions) {
+        item.contentType ||= "video";
+        item.contentId ||= item.workId;
+      }
+      this.submissionsState.schemaVersion = 2;
+      this.saveSubmissions();
+    }
   }
 
   listAccountsRaw() { return [...this.accountsState.accounts]; }
@@ -106,12 +120,17 @@ export class PublisherStore {
 
   createSubmission(input, accounts) {
     const submission = {
-      id: randomUUID(),
+      id: input.id || randomUUID(),
       createdAt: new Date().toISOString(),
-      workId: input.workId,
-      file: input.file,
+      contentType: input.contentType || "video",
+      contentId: input.contentId || input.workId,
+      ...(input.revision ? { revision: input.revision } : {}),
+      ...(input.workId ? { workId: input.workId } : {}),
+      ...(input.file ? { file: input.file } : {}),
+      ...(input.snapshotDirectory ? { snapshotDirectory: input.snapshotDirectory } : {}),
       title: input.title,
       description: input.description || "",
+      summary: input.summary || "",
       shortTitle: input.shortTitle || "",
       tags: input.tags || [],
       creativeStatement: input.creativeStatement || "none",
@@ -123,8 +142,9 @@ export class PublisherStore {
         accountName: account.displayName,
       })),
     };
-    this.submissionsState.submissions.push(submission);
-    this.saveSubmissions();
+    const next = { ...this.submissionsState, submissions: [...this.submissionsState.submissions, submission] };
+    atomicWrite(this.submissionsFile, next);
+    this.submissionsState = next;
     return submission;
   }
 

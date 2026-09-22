@@ -11,7 +11,7 @@ import { publicAccount } from "./store.js";
 
 export const PLATFORM_TO_PT = {
   dy: "抖音", sph: "视频号", xhs: "小红书", blbl: "哔哩哔哩",
-  ks: "快手", tt: "头条", bjh: "百家号", fqsp: "番茄视频",
+  ks: "快手", tt: "头条", bjh: "百家号", fqsp: "番茄视频", juejin: "掘金",
 };
 const PT_TO_PLATFORM = Object.fromEntries(Object.entries(PLATFORM_TO_PT).map(([key, value]) => [value, key]));
 
@@ -23,6 +23,7 @@ const LOGIN_RULES = {
   番茄视频: cookies => cookie(cookies, "sessionid"),
   哔哩哔哩: cookies => cookie(cookies, "SESSDATA"),
   快手: cookies => cookie(cookies, "userId"),
+  掘金: cookies => cookie(cookies, "passport_csrf_token", value => value.length > 10),
   小红书: cookies => {
     const names = [
       "access-token-creator.xiaohongshu.com", "customer-sso-sid",

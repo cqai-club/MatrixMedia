@@ -17,6 +17,8 @@ import {
 } from "../../shared/xhsPublishPolicy.js";
 import { resolveChromePath } from "./chromeConfig.js";
 import xhsChromeHandler from "./upLoad/xhsChrome.js";
+import xhsImageNoteHandler from "./upLoad/xhsImageNote.js";
+import blblArticleHandler from "./upLoad/blblArticle.js";
 import { isPlatformLoginUrl } from "../../shared/platformPageState.js";
 import { normalizeVideoMetadata } from "../../shared/videoMetadata.js";
 import {
@@ -143,6 +145,20 @@ export function hasActivePublishTasks() {
 
 function isExpectedPublishUrl(data, currentUrl) {
   if (currentUrl === data.url) return true;
+  if (data?.pt === "小红书" && data?.textType === "image-note") {
+    try {
+      const current = new URL(currentUrl);
+      return current.origin === "https://creator.xiaohongshu.com"
+        && current.pathname === "/publish/publish";
+    } catch { return false; }
+  }
+  if (data?.pt === "哔哩哔哩" && data?.textType === "article") {
+    try {
+      const current = new URL(currentUrl);
+      return current.origin === "https://member.bilibili.com"
+        && current.pathname.startsWith("/york/read-editor");
+    } catch { return false; }
+  }
   if (data && data.pt === "掘金") {
     try {
       const current = new URL(currentUrl);
@@ -934,7 +950,11 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           }
           const currentUrl = page.url();
           if (isExpectedPublishUrl(data, currentUrl)) {
-            const action = Type[data.pt];
+            const action = data.textType === "image-note" && data.pt === "小红书"
+              ? xhsImageNoteHandler
+              : data.textType === "article" && data.pt === "哔哩哔哩"
+                ? blblArticleHandler
+                : Type[data.pt];
             if (typeof action !== "function") {
               // pt 没注册处理器属于配置/调用方错误，重试 5 次也变不出来 handler，
               // 反而会反复打开同一个 URL，触发站点重复登录（典型例子：账号管理

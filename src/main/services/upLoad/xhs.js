@@ -39,7 +39,7 @@ const XHS_SUPPORTED_STATEMENT_LABELS = new Set([
   "内容包含营销广告",
 ]);
 
-async function selectXhsCreativeStatement(page, data) {
+export async function selectXhsCreativeStatement(page, data) {
   const value = data.data && data.data.creativeStatement;
   console.log("[xhs] creativeStatement 值 =", value);
   if (isCreativeStatementNone(value)) {
