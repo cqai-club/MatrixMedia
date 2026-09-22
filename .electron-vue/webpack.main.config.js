@@ -18,7 +18,8 @@ let mainConfig = {
     level: 'warn'
   },
   entry: {
-    main: path.join(__dirname, '../src/main/index.js')
+    main: path.join(__dirname, '../src/main/index.js'),
+    'publisher-worker': path.join(__dirname, '../src/main/publisher-worker/index.js')
   },
   externals: [
     ...Object.keys(dependencies || {}),

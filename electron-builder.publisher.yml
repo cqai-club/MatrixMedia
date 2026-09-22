@@ -1,0 +1,25 @@
+appId: com.cqaiclub.ebao.publisher-worker
+productName: MatrixMedia Publisher Worker
+executableName: MatrixMedia Publisher Worker
+copyright: Copyright (c) MatrixMedia contributors
+asar: true
+asarUnpack:
+  - "**/*.node"
+electronLanguages:
+  - zh-CN
+directories:
+  output: build/publisher-worker
+  buildResources: lib/icons
+files:
+  - dist/electron/**/*
+  - lib/icons/icon.png
+extraMetadata:
+  main: ./dist/electron/publisher-worker.js
+mac:
+  target:
+    - dir
+  category: public.app-category.video
+  icon: lib/icons/icon.png
+  identity: null
+  hardenedRuntime: true
+  mergeASARs: false

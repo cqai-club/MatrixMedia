@@ -13,13 +13,15 @@ export function applyXhsConservativePublishOptions(payload) {
   if (!isXhsPlatform(payload && payload.pt)) return payload;
   return {
     ...payload,
-    show: true,
-    closeWindowAfterPublish: false,
+    show: payload && payload.publisherWorker ? false : true,
+    closeWindowAfterPublish: payload && payload.publisherWorker ? true : false,
     xhsConservativeMode: true,
   };
 }
 
 export function getPublishAttemptLimit(data, defaultLimit = 5) {
+  const requested = Number(data && data.publishOptions && data.publishOptions.maxAttempts);
+  if (Number.isInteger(requested) && requested >= 1 && requested <= defaultLimit) return requested;
   return isXhsPlatform(data && data.pt) ? 1 : defaultLimit;
 }
 

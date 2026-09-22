@@ -52,8 +52,7 @@ export const VIDEO_PUBLISH_PLATFORM_DOCS = [
     code: "fqsp",
     name: "番茄视频",
     aliases: ["fanqie", "fq", "番茄视频"],
-    automated: false,
-    note: "配置已接入，自动发布流程待完善",
+    automated: true,
   },
 ];
 

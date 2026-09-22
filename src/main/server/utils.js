@@ -39,6 +39,12 @@ function migrateLegacyDataIfNeeded(legacyDir, dataDir) {
  * 使用用户「文档」下的目录，卸载应用后一般仍会保留；并兼容从 userData/data 迁移。
  */
 function getDataDir() {
+  const configured = String(process.env.MATRIXMEDIA_DATA_DIR || "").trim();
+  if (configured) {
+    const dataDir = path.resolve(configured);
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+    return dataDir;
+  }
   try {
     const { app } = require("electron");
     if (app && typeof app.getPath === "function") {

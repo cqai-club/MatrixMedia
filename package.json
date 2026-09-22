@@ -38,7 +38,9 @@
     "test:account-login-window-manager": "node scripts/test-account-login-window-manager.js",
     "test:pick-release-installer": "node scripts/test-pick-release-installer.js",
     "test:publish-abnormal": "node scripts/test-publish-abnormal.js",
-    "test:fail-screenshot": "node scripts/test-fail-screenshot.js"
+    "test:fail-screenshot": "node scripts/test-fail-screenshot.js",
+    "test:publisher-worker": "node scripts/test-publisher-worker.js",
+    "build:publisher-worker:universal": "yarn rm:build && yarn build:dir && electron-builder --config electron-builder.publisher.yml --mac dir --universal"
   },
   "build": {
     "forceCodeSigning": false,
