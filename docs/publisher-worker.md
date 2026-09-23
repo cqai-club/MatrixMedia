@@ -2,6 +2,8 @@
 
 Worker 源码从 `feat/ebao-publisher-worker` 固定提交派生；文章扩展在 `codex/ebao-article-adapters` 开发。它不启动 MatrixMedia Vue 主窗口，只供 e宝工坊随包内置，仍复用登录窗口、账号独立 Chromium session、代理和 Puppeteer 发布实现。
 
+随包 Worker 固定使用 Electron 24.8.8（与源码依赖一致）。头条草稿已在该运行时和既有账号资料下通过一次受控自动保存；曾实验的 Electron 43 会改变 Chromium Profile Cookie 格式，未经正式迁移验证不用于构建用户安装包。
+
 ## 构建
 
 使用仓库规定的 Node.js 20 和 Yarn：

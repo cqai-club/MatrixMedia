@@ -1,6 +1,6 @@
 appId: com.cqaiclub.ebao.publisher-worker
 productName: MatrixMedia Publisher Worker
-electronVersion: 43.3.0
+electronVersion: 24.8.8
 executableName: MatrixMedia Publisher Worker
 copyright: Copyright (c) MatrixMedia contributors
 asar: true
