@@ -18,3 +18,9 @@ export function publisherHandlerKey(data) {
   }
   return !data.textType || data.textType === "local" ? `legacy:${data.pt}` : "";
 }
+
+/** 头条文章草稿在账号后台可见窗口能保存，但隐藏自动窗口的首个请求被拒绝。 */
+export function usesManualToutiaoArticleWindow(data) {
+  return data.publisherWorker === true && data.textType === "article"
+    && data.pt === "头条" && data.publishToDraft === true;
+}

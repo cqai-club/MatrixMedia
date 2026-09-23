@@ -21,7 +21,7 @@ import xhsImageNoteHandler from "./upLoad/xhsImageNote.js";
 import blblArticleHandler from "./upLoad/blblArticle.js";
 import ttArticleHandler from "./upLoad/ttArticle.js";
 import bjhArticleHandler from "./upLoad/bjhArticle.js";
-import { publisherHandlerKey } from "./upLoad/taskRouting.js";
+import { publisherHandlerKey, usesManualToutiaoArticleWindow } from "./upLoad/taskRouting.js";
 import { isPlatformLoginUrl } from "../../shared/platformPageState.js";
 import { normalizeVideoMetadata } from "../../shared/videoMetadata.js";
 import {
@@ -648,10 +648,13 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         );
       }
 
-      browser = await pie.connect(app, puppeteer);
+      const manualToutiaoArticleWindow = usesManualToutiaoArticleWindow(data);
+      browser = await pie.connect(app, manualToutiaoArticleWindow ? puppeteerCore : puppeteer);
       activeBrowser = browser;
       win = new BrowserWindow({
-        show: data.publisherWorker
+        show: manualToutiaoArticleWindow
+          ? true
+          : data.publisherWorker
           ? false
           : isXhsTask
           ? true
@@ -674,7 +677,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
 
       // 注入反自动化检测脚本（在页面 JS 执行前生效）
       // 解决小红书等平台判定 Electron 为 "AI 自动化" 的问题
-      await page.evaluateOnNewDocument(() => {
+      if (!manualToutiaoArticleWindow) await page.evaluateOnNewDocument(() => {
         // 1. 补全 window.chrome 对象（Electron 中缺失，正常 Chrome 有）
         if (!window.chrome) {
           window.chrome = {};
