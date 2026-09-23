@@ -174,17 +174,21 @@ try {
         finishArticle: async () => { sequence.push("finished"); },
         failArticle: async () => { sequence.push("failed"); },
       };
+      const draftPage = { click: async selector => {
+        assert.strictEqual(selector, "#editor");
+        sequence.push("focus-empty-body");
+      } };
       const draftData = { publishToDraft: true, data: { title: "测试标题", content: "完整测试正文", images: [] } };
-      const draftRun = publishToutiaoArticle({}, draftData, null, null);
+      const draftRun = publishToutiaoArticle(draftPage, draftData, null, null);
       await new Promise(resolve => setImmediate(resolve));
-      assert.deepStrictEqual(sequence, ["expect", "title", "wait-initial"]);
+      assert.deepStrictEqual(sequence, ["expect", "title", "focus-empty-body", "wait-initial"]);
       releaseInitial({ confirmed: true });
       await draftRun;
-      assert.deepStrictEqual(sequence, ["expect", "title", "wait-initial", "body", "finished", "stop"]);
+      assert.deepStrictEqual(sequence, ["expect", "title", "focus-empty-body", "wait-initial", "body", "finished", "stop"]);
       sequence.length = 0;
       global.__ttAdapterMocks.confirmToutiaoInitialDraftAutosave = async () => ({ confirmed: false, reason: "初始草稿未确认" });
-      await publishToutiaoArticle({}, draftData, null, null);
-      assert.deepStrictEqual(sequence, ["expect", "title", "failed", "stop"]);
+      await publishToutiaoArticle(draftPage, draftData, null, null);
+      assert.deepStrictEqual(sequence, ["expect", "title", "focus-empty-body", "failed", "stop"]);
       delete global.__ttAdapterMocks;
 
       const originalDataTransfer = global.DataTransfer;

@@ -20,7 +20,9 @@ export default async function publishToutiaoArticle(page, data, window, event) {
     if (mode === "draft") clicked = true; // Title edits can already trigger autosave.
     if (saveObserver) {
       // The first Toutiao autosave creates a draft without a pgc_id. A full-body
-      // first save was rejected (7050); wait until the title-only draft exists.
+      // first save was rejected (7050). Leaving the title field for the still
+      // empty editor triggers its title-only autosave before any body input.
+      await page.click(editor);
       const initial = await confirmToutiaoInitialDraftAutosave(page, data.data.title, saveObserver);
       if (!initial.confirmed) throw new Error(initial.reason);
     }
