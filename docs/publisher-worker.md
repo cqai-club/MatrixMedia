@@ -50,6 +50,7 @@ Supervisor 通过 stdin/stdout 使用逐行 JSON（NDJSON）。stdout 只写响�
 - 未开始的 `queued` 提交在 Worker 重启后继续。
 - 已进入 `running` 但被中断的提交转为内部 `unknown`，不会自动重发。
 - Worker 内部全局串行执行，且 e宝模式将单次尝试限制为 1。
+- 登录或发布窗口关闭后 Worker 仍保持运行，继续处理同一提交的后续平台；只有 `system.shutdown` 或 Supervisor 关闭 stdin 才退出。
 - 登录页/平台后台与同账号的排队、校验或执行任务互斥；发布窗口在 Worker 模式下保持隐藏。
 - 小红书固定使用内置 Electron Chromium；番茄视频区分“一键发布”和“保存草稿”，草稿模式绝不回退为直接发布。
 - UUID 或导入账号的 partition 不经过旧 GUI 的手机号后缀截断，账号代理随该 partition 一起复用。

@@ -28,6 +28,11 @@ const dataRoot = path.resolve(option("--data-dir") || path.join(app.getPath("app
 app.name = "ebao-publisher-worker";
 app.setPath("userData", path.join(dataRoot, "user-data"));
 process.env.MATRIXMEDIA_DATA_DIR = path.join(dataRoot, "matrix-data");
+// A publish/login BrowserWindow can be the only window. Closing it must not
+// terminate the NDJSON Worker while later targets remain in the serial queue.
+app.on("window-all-closed", () => {
+  log("[publisher-worker] 所有窗口已关闭，继续等待发布队列或 Supervisor 指令");
+});
 
 async function main() {
   if (!process.argv.includes("--publisher-worker")) {

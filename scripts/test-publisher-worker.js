@@ -9,6 +9,8 @@ const { pathToFileURL } = require("url");
 const root = path.join(__dirname, "..");
 
 (async () => {
+  const workerEntry = fs.readFileSync(path.join(root, "src/main/publisher-worker/index.js"), "utf8");
+  assert.match(workerEntry, /app\.on\("window-all-closed",\s*\(\)\s*=>/u);
   const protocol = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/protocol.js")));
   const storeModule = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/store.js")));
   const capabilities = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/capabilities.js")));
