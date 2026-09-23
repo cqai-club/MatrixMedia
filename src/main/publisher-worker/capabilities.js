@@ -8,6 +8,10 @@ const EXPERIMENTAL = {
   "blbl:article": { requiredFields: [], maxAssets: 1 },
   "xhs:image-note": { requiredFields: [], maxAssets: 20, maxTitleLength: 20 },
 };
+const ARTICLE_MODES = {
+  tt: { requiredFields: [], maxAssets: 20 },
+  bjh: { requiredFields: [], maxAssets: 20 },
+};
 
 /** Only verified capabilities are advertised in production. */
 export function platformCapabilities(env = process.env) {
@@ -28,6 +32,16 @@ export function platformCapabilities(env = process.env) {
       requiredFields[type] = settings.requiredFields;
       maxAssets[type] = settings.maxAssets;
       if (settings.maxTitleLength) maxTitleLength[type] = settings.maxTitleLength;
+    }
+    const articleSettings = ARTICLE_MODES[platform];
+    if (articleSettings) {
+      const articleModes = ["draft", "publish"].filter(mode => enabled.has(`${platform}:article:${mode}`));
+      if (articleModes.length) {
+        types.push("article");
+        modes.article = articleModes;
+        requiredFields.article = articleSettings.requiredFields;
+        maxAssets.article = articleSettings.maxAssets;
+      }
     }
     return { platform, contentTypes: types, modes, requiredFields, maxAssets, maxTitleLength };
   });

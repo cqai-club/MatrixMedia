@@ -2,8 +2,9 @@
 
 import path from "path";
 import ptConfig from "../config/ptConfig";
-import { runPuppeteerTask } from "../services/puppeteerFile";
+import { cancelPuppeteerTasks, runPuppeteerTask } from "../services/puppeteerFile";
 import { PublisherProtocolError } from "./protocol.js";
+import { articleImageIds } from "./article-content.js";
 
 const TIMEOUT_MS = 25 * 60 * 1000;
 const DISCLOSURES = {
@@ -31,7 +32,11 @@ function runWorkerTask(payload, mode) {
       clearTimeout(timer);
       resolve(result);
     };
-    const timer = setTimeout(() => finish({ exitCode: 1, status: "unknown", message: "内容提交超时，请到平台后台确认" }), TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      finish({ exitCode: 1, status: "unknown", message: "内容提交超时，请到平台后台确认" });
+      // Do not let an old browser task overlap the next target after timeout.
+      cancelPuppeteerTasks("内容提交超时，已停止浏览器任务");
+    }, TIMEOUT_MS);
     try {
       runPuppeteerTask(payload, {
         reply(channel, response) {
@@ -156,4 +161,48 @@ export function runBilibiliArticle(account, submission, manifest) {
     publishOptions: { maxAttempts: 1 },
   };
   return runWorkerTask(payload, submission.mode);
+}
+
+function runWebArticle(account, submission, manifest, url) {
+  const cfg = ptConfig[account.pt];
+  const usedImages = new Set(articleImageIds(manifest));
+  const payload = {
+    taskId: Date.now() + Math.random(),
+    textType: "article",
+    bookName: manifest.title,
+    data: {
+      title: manifest.title,
+      content: withDisclosure(manifest.body, manifest.creativeStatement),
+      summary: manifest.summary || "",
+      tags: manifest.tags,
+      images: manifest.assets.filter(asset => usedImages.has(asset.id)).map(asset => ({
+        id: asset.id, mime: asset.mime, path: path.join(submission.snapshotDirectory, "assets", asset.id),
+      })),
+      coverPath: manifest.coverAssetId ? path.join(submission.snapshotDirectory, "assets", manifest.coverAssetId) : "",
+      coverMime: manifest.assets.find(asset => asset.id === manifest.coverAssetId)?.mime || "",
+    },
+    url,
+    show: false,
+    mmCliSuppressWindow: true,
+    closeWindowAfterPublish: true,
+    useragent: cfg.useragent,
+    partition: account.partition,
+    phone: account.id,
+    pt: account.pt,
+    publisherWorker: true,
+    proxyOverride: account.proxy,
+    publishToDraft: submission.mode === "draft",
+    publishOptions: { maxAttempts: 1 },
+  };
+  return runWorkerTask(payload, submission.mode);
+}
+
+export function runToutiaoArticle(account, submission, manifest) {
+  if (account.platform !== "tt") throw new PublisherProtocolError("unsupported-platform", "头条文章适配器不可用");
+  return runWebArticle(account, submission, manifest, "https://mp.toutiao.com/profile_v4/graphic/publish");
+}
+
+export function runBaijiahaoArticle(account, submission, manifest) {
+  if (account.platform !== "bjh") throw new PublisherProtocolError("unsupported-platform", "百家号文章适配器不可用");
+  return runWebArticle(account, submission, manifest, "https://baijiahao.baidu.com/builder/rc/edit?type=news");
 }

@@ -2,7 +2,7 @@
 
 import fs from "fs";
 import path from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { PublisherProtocolError } from "./protocol.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -43,20 +43,25 @@ export function readContentPackage(directory, expectedId, revision, expectedType
   const assetsRoot = path.join(root, "assets");
   if (fs.lstatSync(assetsRoot).isSymbolicLink() || !fs.statSync(assetsRoot).isDirectory()) invalid("素材目录无效");
   const ids = new Set();
+  const assetHashes = {};
   for (const asset of manifest.assets) {
     if (!asset || !UUID.test(asset.id) || ids.has(asset.id) || !["image/jpeg", "image/png", "image/webp"].includes(asset.mime)) invalid("素材清单无效");
     ids.add(asset.id);
     const file = path.join(assetsRoot, asset.id);
     const stat = fileNoSymlink(file);
     if (stat.size !== asset.bytes || stat.size > MAX_ASSET || stat.size < 1) invalid("素材已改变");
-    if (sniff(fs.readFileSync(file)) !== asset.mime) invalid("素材格式不匹配");
+    const data = fs.readFileSync(file);
+    if (sniff(data) !== asset.mime) invalid("素材格式不匹配");
+    const digest = createHash("sha256").update(data).digest("hex");
+    if (asset.sha256 && (typeof asset.sha256 !== "string" || digest !== asset.sha256)) invalid("素材已改变");
+    assetHashes[asset.id] = digest;
   }
   if (manifest.coverAssetId && !ids.has(manifest.coverAssetId)) invalid("封面素材无效");
-  return { manifest, root };
+  return { manifest, root, assetHashes };
 }
 
 export function captureContentPackage(source, snapshotsRoot, submissionId) {
-  const { manifest, root } = source;
+  const { manifest, root, assetHashes } = source;
   if (!UUID.test(submissionId)) invalid("提交 ID 无效");
   fs.mkdirSync(snapshotsRoot, { recursive: true, mode: 0o700 });
   const staged = path.join(snapshotsRoot, `.${submissionId}.${randomUUID()}.tmp`);
@@ -68,7 +73,10 @@ export function captureContentPackage(source, snapshotsRoot, submissionId) {
     for (const asset of manifest.assets) {
       fs.copyFileSync(path.join(root, "assets", asset.id), path.join(staged, "assets", asset.id), fs.constants.COPYFILE_EXCL);
     }
-    readContentPackage(staged, manifest.id, manifest.revision, manifest.contentType, false);
+    const verified = readContentPackage(staged, manifest.id, manifest.revision, manifest.contentType, false);
+    for (const asset of manifest.assets) {
+      if (verified.assetHashes[asset.id] !== assetHashes[asset.id]) invalid("复制内容快照时素材发生变化");
+    }
     fs.renameSync(staged, destination);
     return destination;
   } catch (error) {

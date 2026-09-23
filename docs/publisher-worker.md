@@ -1,6 +1,6 @@
 # Publisher Worker（e宝工坊内置模式）
 
-`feat/ebao-publisher-worker` 增加一个不启动 MatrixMedia Vue 主窗口的 Electron 入口。该入口只供 e宝工坊随包内置使用，仍复用 MatrixMedia 的登录窗口、Chromium session、代理和 Puppeteer 发布实现。
+Worker 源码从 `feat/ebao-publisher-worker` 固定提交派生；文章扩展在 `codex/ebao-article-adapters` 开发。它不启动 MatrixMedia Vue 主窗口，只供 e宝工坊随包内置，仍复用登录窗口、账号独立 Chromium session、代理和 Puppeteer 发布实现。
 
 ## 构建
 
@@ -43,7 +43,11 @@ Supervisor 通过 stdin/stdout 使用逐行 JSON（NDJSON）。stdout 只写响�
 
 账号响应不含 Cookie 或 Chromium partition。提交记录只暴露提交时间、内容类型、内容 ID、模式和账号名称快照，不暴露内部执行状态。schema v1 视频记录迁移到 v2 时保持原 workId 和历史。发布前会同步校验所有目标账号登录态；文章、图文内容包先复制为不可变快照，再持久化，成功后才返回 `accepted: true`。
 
-文章和图文适配器采用能力门控。未完成真实平台验收时默认只开放原八个平台的视频能力；开发验收可设置 `EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES=juejin:article,blbl:article,xhs:image-note`。正式打开能力之前必须完成登录、草稿、一次受控直接发布与同 session 后台确认。掘金和 B站专栏当前最多接受一张封面素材，正文图片适配尚未验收，提交前会明确拒绝；Worker 模式不会第二次点击掘金发布确认按钮。
+文章和图文适配器采用能力门控。未完成真实平台验收时默认只开放原八个平台的视频能力。已有实验开关 `juejin:article,blbl:article,xhs:image-note` 不变；头条与百家号改为**按提交方式分别开放**：`tt:article:draft`、`tt:article:publish`、`bjh:article:draft`、`bjh:article:publish`。可用 `EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES` 设置逗号分隔的开关，仅在对应方式真实验收后打开。代码可用不等于平台能力已验收，默认四个新开关均关闭。
+
+头条与百家号文章通过按平台、内容类型、提交方式分流的适配器处理；文章不会进入同平台视频处理器。公共 Markdown 中的 `ebao-asset://<UUID>` 只允许引用本草稿素材，接受前校验 SHA-256（旧素材至少检查尺寸、格式和快照前后哈希），随后复制不可变内容快照。Worker 使用账号原有 partition 上传正文图，替换为平台 HTTPS 图片地址后再写入文章编辑器；上传失败时不点击保存/发布。封面独立选取，可复用正文图片。平台没有可观察的草稿/发布确认，或点击后遇到验证、超时、异常时记为内部未知，不自动重试。掘金和 B站专栏仍最多接受一张封面，正文插图不开放。
+
+真实验收顺序：每个平台依次验证重启后登录、纯文草稿、含封面和正文插图的草稿、受控直接发布、用相同 partition 打开后台核对。缺少发文权限或遇到新页面结构时保留实验能力关闭，调整适配器并重新测试，不把 Worker 的内部状态同步给 e宝页面。
 
 ## 恢复语义
 

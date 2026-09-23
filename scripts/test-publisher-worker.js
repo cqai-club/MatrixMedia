@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { pathToFileURL } = require("url");
+const { createHash } = require("crypto");
 
 const root = path.join(__dirname, "..");
 
@@ -15,11 +16,28 @@ const root = path.join(__dirname, "..");
   const storeModule = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/store.js")));
   const capabilities = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/capabilities.js")));
   const packages = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/content-package.js")));
+  const articles = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/article-content.js")));
+  const routing = await import(pathToFileURL(path.join(root, "src/main/services/upLoad/taskRouting.js")));
   assert.deepStrictEqual(capabilities.platformCapabilities({}).find(item => item.platform === "juejin").contentTypes, []);
   assert.deepStrictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "juejin:article" }).find(item => item.platform === "juejin").modes.article, ["publish", "draft"]);
   assert.strictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "juejin:article" }).find(item => item.platform === "juejin").maxAssets.article, 1);
   assert.deepStrictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "xhs:image-note" }).find(item => item.platform === "xhs").modes["image-note"], ["publish", "draft"]);
   assert.strictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "xhs:image-note" }).find(item => item.platform === "xhs").maxTitleLength["image-note"], 20);
+  for (const platform of ["tt", "bjh"]) {
+    const defaults = capabilities.platformCapabilities({}).find(item => item.platform === platform);
+    assert.deepStrictEqual(defaults.contentTypes, ["video"]);
+    assert.strictEqual(capabilities.accepts([defaults], platform, "article", "draft"), false);
+    const onlyDraft = capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: `${platform}:article:draft` });
+    assert.deepStrictEqual(onlyDraft.find(item => item.platform === platform).modes.article, ["draft"]);
+    assert.strictEqual(capabilities.accepts(onlyDraft, platform, "article", "publish"), false);
+    const onlyPublish = capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: `${platform}:article:publish` });
+    assert.deepStrictEqual(onlyPublish.find(item => item.platform === platform).modes.article, ["publish"]);
+  }
+  assert.strictEqual(routing.publisherHandlerKey({ pt: "头条", textType: "article", publishToDraft: true }), "article:tt:draft");
+  assert.strictEqual(routing.publisherHandlerKey({ pt: "百家号", textType: "article" }), "article:bjh:publish");
+  assert.strictEqual(routing.publisherHandlerKey({ pt: "头条", textType: "local" }), "legacy:头条");
+  assert.strictEqual(routing.publisherHandlerKey({ pt: "抖音", textType: "article" }), "");
+  assert.strictEqual(routing.publisherHandlerKey({ pt: "小红书", textType: "image-note" }), "image-note:xhs:publish");
   const frames = [];
   const errors = [];
   const decode = protocol.createFrameDecoder(frame => frames.push(frame), error => errors.push(error));
@@ -89,12 +107,24 @@ const root = path.join(__dirname, "..");
       coverAssetId: assetId, platformFields: { juejin: { category: "前端" } },
     };
     fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify(manifest));
+    const managedBody = `正文\n\n![图](ebao-asset://${assetId})`;
+    assert.deepStrictEqual(articles.articleImageIds({ ...manifest, body: managedBody }), [assetId]);
+    assert.match(articles.renderArticleHtml({ ...manifest, body: managedBody }, { [assetId]: "https://example.com/image.png" }), /<img src="https:\/\/example.com\/image.png"/u);
+    assert.throws(() => articles.renderArticleHtml({ ...manifest, body: managedBody }, {}), /上传未完成/u);
+    assert.throws(() => articles.articleImageIds({ ...manifest, body: "![外部](https://example.com/a.png)" }), /必须引用/u);
+    assert.throws(() => articles.articleImageIds({ ...manifest, body: "![本地](../image.png)" }), /必须引用/u);
+    assert.throws(() => articles.articleImageIds({ ...manifest, body: "<img src='file:///tmp/a'>" }), /原始 HTML/u);
+    assert.throws(() => articles.articleImageIds({ ...manifest, body: "![错误](ebao-asset://33333333-3333-4333-8333-333333333333)" }), /必须引用/u);
     const checked = packages.readContentPackage(source, contentId, 3, "article");
     const snapshotId = "33333333-3333-4333-8333-333333333333";
     const snapshot = packages.captureContentPackage(checked, path.join(temporary, "snapshots"), snapshotId);
     fs.rmSync(source, { recursive: true });
     assert.strictEqual(packages.readContentPackage(snapshot, contentId, 3, "article", false).manifest.body, "# 标题");
     assert.throws(() => packages.readContentPackage(snapshot, contentId, 4, "article", false), /修订不匹配/u);
+    const changedManifest = { ...manifest, assets: [{ ...manifest.assets[0], sha256: createHash("sha256").update(png).digest("hex") }] };
+    fs.writeFileSync(path.join(snapshot, "manifest.json"), JSON.stringify(changedManifest));
+    fs.writeFileSync(path.join(snapshot, "assets", assetId), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 2]));
+    assert.throws(() => packages.readContentPackage(snapshot, contentId, 3, "article", false), /素材已改变/u);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

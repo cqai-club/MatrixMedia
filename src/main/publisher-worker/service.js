@@ -9,7 +9,8 @@ import { PublisherStore, publicSubmission } from "./store.js";
 import { PublisherAccounts } from "./accounts.js";
 import { accepts, platformCapabilities } from "./capabilities.js";
 import { captureContentPackage, readContentPackage } from "./content-package.js";
-import { runBilibiliArticle, runJuejinArticle, runXhsImageNote } from "./article.js";
+import { runBilibiliArticle, runJuejinArticle, runXhsImageNote, runToutiaoArticle, runBaijiahaoArticle } from "./article.js";
+import { articleImageIds } from "./article-content.js";
 
 function text(value, label, max) {
   const normalized = String(value || "").trim();
@@ -91,6 +92,16 @@ export class PublisherWorkerService {
     } else {
       if (!Number.isSafeInteger(params.revision) || params.revision < 1) throw new PublisherProtocolError("invalid-content", "草稿修订号无效");
       source = readContentPackage(params.contentDirectory, params.contentId, params.revision, contentType);
+      if (contentType === "article" && source.manifest.assets.length > 0 && !source.manifest.coverAssetId) {
+        throw new PublisherProtocolError("invalid-content", "文章素材必须选择封面");
+      }
+      if (contentType === "article" && selected.some(account => account.platform === "tt" || account.platform === "bjh")) {
+        articleImageIds(source.manifest);
+      }
+      if (contentType === "article" && selected.some(account => account.platform === "juejin" || account.platform === "blbl")
+        && source.manifest.body.includes("ebao-asset://")) {
+        throw new PublisherProtocolError("unsupported-content", "掘金和B站专栏暂不支持正文插图，请分开提交");
+      }
       for (const account of selected) {
         const required = capabilities.find(item => item.platform === account.platform)?.requiredFields[contentType] || [];
         const limit = capabilities.find(item => item.platform === account.platform)?.maxTitleLength[contentType];
@@ -133,6 +144,9 @@ export class PublisherWorkerService {
         if (source) {
           // Re-read after login validation: an editor may have saved another revision.
           source = readContentPackage(params.contentDirectory, params.contentId, params.revision, contentType);
+          if (contentType === "article" && selected.some(account => account.platform === "tt" || account.platform === "bjh")) {
+            articleImageIds(source.manifest);
+          }
           snapshotDirectory = captureContentPackage(source, this.snapshotsRoot, id);
         }
         const creativeStatement = source?.manifest.creativeStatement || String(params.creativeStatement || "none");
@@ -201,6 +215,10 @@ export class PublisherWorkerService {
                 results.push(await runJuejinArticle(account, submission, content.manifest));
               } else if (account.platform === "blbl" && submission.contentType === "article") {
                 results.push(await runBilibiliArticle(account, submission, content.manifest));
+              } else if (account.platform === "tt" && submission.contentType === "article") {
+                results.push(await runToutiaoArticle(account, submission, content.manifest));
+              } else if (account.platform === "bjh" && submission.contentType === "article") {
+                results.push(await runBaijiahaoArticle(account, submission, content.manifest));
               } else if (account.platform === "xhs" && submission.contentType === "image-note") {
                 results.push(await runXhsImageNote(account, submission, content.manifest));
               } else {

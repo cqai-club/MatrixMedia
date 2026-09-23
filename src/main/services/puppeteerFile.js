@@ -19,6 +19,9 @@ import { resolveChromePath } from "./chromeConfig.js";
 import xhsChromeHandler from "./upLoad/xhsChrome.js";
 import xhsImageNoteHandler from "./upLoad/xhsImageNote.js";
 import blblArticleHandler from "./upLoad/blblArticle.js";
+import ttArticleHandler from "./upLoad/ttArticle.js";
+import bjhArticleHandler from "./upLoad/bjhArticle.js";
+import { publisherHandlerKey } from "./upLoad/taskRouting.js";
 import { isPlatformLoginUrl } from "../../shared/platformPageState.js";
 import { normalizeVideoMetadata } from "../../shared/videoMetadata.js";
 import {
@@ -157,6 +160,13 @@ function isExpectedPublishUrl(data, currentUrl) {
       const current = new URL(currentUrl);
       return current.origin === "https://member.bilibili.com"
         && current.pathname.startsWith("/york/read-editor");
+    } catch { return false; }
+  }
+  if (data?.pt === "头条" && data?.textType === "article") {
+    try {
+      const current = new URL(currentUrl);
+      return current.origin === "https://mp.toutiao.com"
+        && current.pathname === "/profile_v4/graphic/publish";
     } catch { return false; }
   }
   if (data && data.pt === "掘金") {
@@ -328,6 +338,14 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     reply(channel, ...args) {
       if (finished) return false;
       const payload = args[0];
+      // Article Worker tasks are single-attempt. Never turn a post-click
+      // uncertainty into the legacy retry path (which can duplicate a post).
+      if (data.publisherWorker && data.textType === "article" &&
+        (data.pt === "头条" || data.pt === "百家号") && channel === "puppeteerFile-done") {
+        const replied = transport.reply(channel, ...args);
+        finishOnce();
+        return replied;
+      }
       if (
         channel === "puppeteerFile-done" &&
         payload &&
@@ -601,7 +619,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
 
     currentAttempt++;
     if (currentAttempt > maxRetries) {
-      console.log("已达到最大重试次数，操作失败", data);
+      console.log("已达到最大重试次数，操作失败", { taskId: data.taskId, pt: data.pt, textType: data.textType });
       safeReply("puppeteer-noLogin", data);
       await replyFailureWithShot({
         ...data,
@@ -950,11 +968,18 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           }
           const currentUrl = page.url();
           if (isExpectedPublishUrl(data, currentUrl)) {
-            const action = data.textType === "image-note" && data.pt === "小红书"
-              ? xhsImageNoteHandler
-              : data.textType === "article" && data.pt === "哔哩哔哩"
-                ? blblArticleHandler
-                : Type[data.pt];
+            const key = publisherHandlerKey(data);
+            const action = key === "article:blbl:draft" || key === "article:blbl:publish"
+              ? blblArticleHandler
+              : key === "article:tt:draft" || key === "article:tt:publish"
+                ? ttArticleHandler
+                : key === "article:bjh:draft" || key === "article:bjh:publish"
+                  ? bjhArticleHandler
+                  : key === "article:juejin:draft" || key === "article:juejin:publish"
+                    ? Type["掘金"]
+                    : key === "image-note:xhs:draft" || key === "image-note:xhs:publish"
+                      ? xhsImageNoteHandler
+                      : key.startsWith("legacy:") ? Type[data.pt] : undefined;
             if (typeof action !== "function") {
               // pt 没注册处理器属于配置/调用方错误，重试 5 次也变不出来 handler，
               // 反而会反复打开同一个 URL，触发站点重复登录（典型例子：账号管理

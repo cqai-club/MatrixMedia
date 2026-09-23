@@ -40,7 +40,7 @@
     "test:publish-abnormal": "node scripts/test-publish-abnormal.js",
     "test:fail-screenshot": "node scripts/test-fail-screenshot.js",
     "test:fqsp-publish-mode": "node scripts/test-fqsp-publish-mode.js",
-    "test:publisher-worker": "node scripts/test-publisher-worker.js && node scripts/test-fqsp-publish-mode.js && node scripts/test-xhs-publish-policy.js && node scripts/test-proxy-config.js && node scripts/test-fail-screenshot.js && node scripts/test-publish-draft-args.js",
+    "test:publisher-worker": "node scripts/test-publisher-worker.js && node scripts/test-article-adapters.js && node scripts/test-fqsp-publish-mode.js && node scripts/test-xhs-publish-policy.js && node scripts/test-proxy-config.js && node scripts/test-fail-screenshot.js && node scripts/test-publish-draft-args.js",
     "build:publisher-worker:universal": "yarn rm:build && yarn build:dir && electron-builder --config electron-builder.publisher.yml --mac dir --universal"
   },
   "build": {
@@ -157,6 +157,7 @@
     "express": "4.19.2",
     "fs-extra": "^11.1.0",
     "jsqr": "^1.4.0",
+    "markdown-it": "14.1.0",
     "moment": "^2.30.1",
     "puppeteer-core": "^19.0.0",
     "puppeteer-extra": "^3.3.6",
