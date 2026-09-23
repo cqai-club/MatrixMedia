@@ -55,6 +55,8 @@ try {
       fs.writeFileSync(image, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]));
       await assert.rejects(upload.uploadBaijiahaoImage({ evaluate: async () => ({ errmsg: "invalid" }) },
         { path: image, mime: "image/png" }), /图片上传失败/u);
+      await assert.rejects(upload.uploadBaijiahaoImage({ evaluate: async () => ({ errno: 1, errmsg: "success", ret: { https_url: "https://example.com/a.png" } }) },
+        { path: image, mime: "image/png" }), /图片上传失败/u);
       console.log("test-article-adapters passed");
     } finally {
       delete global.document;

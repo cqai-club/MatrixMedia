@@ -31,7 +31,7 @@ export async function uploadBaijiahaoImage(page, asset) {
     if (!response.ok) throw new Error(`百家号图片上传 HTTP ${response.status}`);
     return response.json();
   }, binary, asset.mime);
-  if (result?.errmsg !== "success" || !result?.ret?.https_url) {
+  if (result?.errno !== 0 || result?.errmsg !== "success" || !result?.ret?.https_url) {
     throw new Error(`百家号图片上传失败：${String(result?.errmsg || "未确认")}`);
   }
   return httpsImage(result.ret.https_url);
@@ -72,11 +72,11 @@ export async function uploadToutiaoImage(page, editor, asset) {
     await page.waitForFunction((selector, existing) => {
       const images = [...document.querySelectorAll(`${selector} img`)];
       return images.some(image => image.complete && image.naturalWidth > 0 &&
-        /^https:\/\//i.test(image.currentSrc || image.src) && !existing.includes(image.getAttribute("src")));
+        /^https:\/\//i.test(image.getAttribute("src") || "") && !existing.includes(image.getAttribute("src")));
     }, { timeout: 45000 }, editor, previous);
     const remote = await page.evaluate((selector, existing) => {
       const images = [...document.querySelectorAll(`${selector} img`)];
-      return images.map(image => image.currentSrc || image.src)
+      return images.map(image => image.getAttribute("src"))
         .find(src => /^https:\/\//i.test(src) && !existing.includes(src)) || "";
     }, editor, previous);
     return httpsImage(remote);

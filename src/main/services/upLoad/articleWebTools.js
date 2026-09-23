@@ -75,6 +75,21 @@ export function renderUploadedArticle(data, uploadedUrls) {
   return renderArticleHtml({ body: data.data.content, assets }, uploadedUrls);
 }
 
+/** Optional draft metadata must not be silently discarded by a site adapter. */
+export async function fillArticleMetadata(page, data) {
+  const summary = String(data.data?.summary || "").trim();
+  if (summary) {
+    const selector = "textarea[placeholder*='摘要'],input[placeholder*='摘要']";
+    const field = await page.$(selector);
+    if (!field) throw new Error("平台文章摘要字段不可用，请清空摘要后重试");
+    await page.click(selector, { clickCount: 3 });
+    await page.keyboard.press("Backspace");
+    await page.type(selector, summary, { delay: 15 });
+    const actual = await page.$eval(selector, element => element.value || "");
+    if (actual.trim() !== summary) throw new Error("平台文章摘要未写入");
+  }
+}
+
 export async function clickArticleAction(page, labels, scope = "") {
   const found = await page.evaluate((choices, within) => {
     const root = within ? document.querySelector(within) : document;

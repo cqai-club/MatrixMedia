@@ -2,7 +2,7 @@
 
 import {
   captureArticleNotices, clickArticleAction, confirmPlatformOutcome, currentUrl, failArticle,
-  fillArticleTitle, findArticleEditor, finishArticle, pasteArticleHtml, renderUploadedArticle,
+  fillArticleMetadata, fillArticleTitle, findArticleEditor, finishArticle, pasteArticleHtml, renderUploadedArticle,
 } from "./articleWebTools.js";
 import { selectToutiaoCover, uploadToutiaoImage } from "./articleImageUpload.js";
 
@@ -26,6 +26,7 @@ export default async function publishToutiaoArticle(page, data, window, event) {
     }
     const html = renderUploadedArticle(data, uploaded);
     await pasteArticleHtml(page, editor, html, data.data.content, page, Object.values(uploaded));
+    await fillArticleMetadata(page, data);
     if (coverUrl) await selectToutiaoCover(page, coverUrl);
 
     const before = currentUrl(page);

@@ -2,7 +2,7 @@
 
 import {
   captureArticleNotices, clickArticleAction, confirmPlatformOutcome, currentUrl, failArticle,
-  fillArticleTitle, findBaijiahaoEditor, finishArticle, pasteArticleHtml, renderUploadedArticle,
+  fillArticleMetadata, fillArticleTitle, findBaijiahaoEditor, finishArticle, pasteArticleHtml, renderUploadedArticle,
 } from "./articleWebTools.js";
 import { selectBaijiahaoCover, uploadBaijiahaoImage } from "./articleImageUpload.js";
 
@@ -26,6 +26,7 @@ export default async function publishBaijiahaoArticle(page, data, window, event)
     }
     const html = renderUploadedArticle(data, uploaded);
     await pasteArticleHtml(page, selector, html, data.data.content, context, Object.values(uploaded));
+    await fillArticleMetadata(page, data);
     if (coverUrl) await selectBaijiahaoCover(page, coverUrl);
 
     const before = currentUrl(page);

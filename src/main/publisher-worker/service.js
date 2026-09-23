@@ -84,6 +84,7 @@ export class PublisherWorkerService {
 
     let file = "";
     let source = null;
+    let acceptedManifest = "";
     if (contentType === "video") {
       const requestedFile = text(params.file, "视频文件", 4096);
       if (!path.isAbsolute(requestedFile) || !fs.existsSync(requestedFile)) throw new PublisherProtocolError("video-not-found", "成片文件不存在");
@@ -101,6 +102,10 @@ export class PublisherWorkerService {
       if (contentType === "article" && selected.some(account => account.platform === "juejin" || account.platform === "blbl")
         && source.manifest.body.includes("ebao-asset://")) {
         throw new PublisherProtocolError("unsupported-content", "掘金和B站专栏暂不支持正文插图，请分开提交");
+      }
+      if (contentType === "article" && source.manifest.tags.length > 0
+        && selected.some(account => account.platform === "tt" || account.platform === "bjh")) {
+        throw new PublisherProtocolError("unsupported-content", "头条、百家号文章标签写入尚未验收，请先清空标签");
       }
       for (const account of selected) {
         const required = capabilities.find(item => item.platform === account.platform)?.requiredFields[contentType] || [];
@@ -130,6 +135,7 @@ export class PublisherWorkerService {
         && !["none", "ai_generated", "fiction", "marketing"].includes(source.manifest.creativeStatement)) {
         throw new PublisherProtocolError("unsupported-content", "小红书暂不支持该内容声明");
       }
+      acceptedManifest = JSON.stringify(source.manifest);
     }
     selected.forEach(account => this.accounts.assertNoOpenWindow(account.id));
     selected.forEach(account => this.validatingAccounts.add(account.id));
@@ -144,8 +150,8 @@ export class PublisherWorkerService {
         if (source) {
           // Re-read after login validation: an editor may have saved another revision.
           source = readContentPackage(params.contentDirectory, params.contentId, params.revision, contentType);
-          if (contentType === "article" && selected.some(account => account.platform === "tt" || account.platform === "bjh")) {
-            articleImageIds(source.manifest);
+          if (JSON.stringify(source.manifest) !== acceptedManifest) {
+            throw new PublisherProtocolError("invalid-content", "草稿在提交检查期间发生变化，请重新提交");
           }
           snapshotDirectory = captureContentPackage(source, this.snapshotsRoot, id);
         }
