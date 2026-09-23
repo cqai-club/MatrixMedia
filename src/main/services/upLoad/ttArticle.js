@@ -2,7 +2,8 @@
 
 import {
   captureArticleNotices, clickArticleAction, confirmPlatformOutcome, currentUrl, failArticle,
-  confirmToutiaoBodyAccepted, confirmToutiaoDraftAutosave, fillArticleMetadata, fillArticleTitle, findArticleEditor, finishArticle,
+  confirmToutiaoBodyAccepted, confirmToutiaoDraftAutosave, confirmToutiaoInitialDraftAutosave,
+  fillArticleMetadata, fillArticleTitle, findArticleEditor, finishArticle,
   observeToutiaoDraftSave, pasteArticleHtml, renderUploadedArticle,
 } from "./articleWebTools.js";
 import { selectToutiaoCover, uploadToutiaoImage } from "./articleImageUpload.js";
@@ -14,8 +15,15 @@ export default async function publishToutiaoArticle(page, data, window, event) {
   const saveObserver = mode === "draft" ? observeToutiaoDraftSave(page) : null;
   try {
     const editor = await findArticleEditor(page);
+    saveObserver?.expect(data.data.title, data.data.content);
     await fillArticleTitle(page, data.data.title);
     if (mode === "draft") clicked = true; // Title edits can already trigger autosave.
+    if (saveObserver) {
+      // The first Toutiao autosave creates a draft without a pgc_id. A full-body
+      // first save was rejected (7050); wait until the title-only draft exists.
+      const initial = await confirmToutiaoInitialDraftAutosave(page, data.data.title, saveObserver);
+      if (!initial.confirmed) throw new Error(initial.reason);
+    }
     const uploaded = {};
     for (const asset of data.data.images || []) {
       uploaded[asset.id] = await uploadToutiaoImage(page, editor, asset);
@@ -28,7 +36,6 @@ export default async function publishToutiaoArticle(page, data, window, event) {
       });
     }
     const html = renderUploadedArticle(data, uploaded);
-    saveObserver?.expect(data.data.title, data.data.content);
     await pasteArticleHtml(page, editor, html, data.data.content, page, Object.values(uploaded), {
       preferKeyboardForPlain: true,
     });

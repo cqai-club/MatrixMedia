@@ -5,7 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { EventEmitter } = require("events");
-const { buildSync } = require("esbuild");
+const { build, buildSync } = require("esbuild");
 const { Keyboard } = require("puppeteer-core");
 
 assert.strictEqual(typeof Keyboard.prototype.sendCharacter, "function");
@@ -22,6 +22,32 @@ try {
       outfile: path.join(bundleDir, `${name}.cjs`), external: ["electron"],
     });
   }
+  const webExports = [
+    "captureArticleNotices", "clickArticleAction", "confirmPlatformOutcome", "currentUrl", "failArticle",
+    "confirmToutiaoBodyAccepted", "confirmToutiaoDraftAutosave", "confirmToutiaoInitialDraftAutosave",
+    "fillArticleMetadata", "fillArticleTitle", "findArticleEditor", "finishArticle",
+    "observeToutiaoDraftSave", "pasteArticleHtml", "renderUploadedArticle",
+  ];
+  const imageExports = ["selectToutiaoCover", "uploadToutiaoImage"];
+  const toutiaoAdapterBuild = {
+    entryPoints: [path.join(root, "src/main/services/upLoad/ttArticle.js")],
+    bundle: true, platform: "node", format: "cjs",
+    outfile: path.join(bundleDir, "ttArticle-test.cjs"),
+    plugins: [{
+      name: "mock-toutiao-adapter-dependencies",
+      setup(build) {
+        build.onResolve({ filter: /^\.\/article(?:WebTools|ImageUpload)\.js$/u }, args => ({
+          path: args.path.includes("WebTools") ? "web" : "image", namespace: "tt-article-test",
+        }));
+        build.onLoad({ filter: /.*/u, namespace: "tt-article-test" }, args => ({
+          contents: (args.path === "web" ? webExports : imageExports)
+            .map(name => `export const ${name} = (...args) => globalThis.__ttAdapterMocks.${name}(...args);`)
+            .join("\n"),
+          loader: "js",
+        }));
+      },
+    }],
+  };
   const tools = require(path.join(bundleDir, "articleWebTools.cjs"));
   const upload = require(path.join(bundleDir, "articleImageUpload.cjs"));
   const pageAt = (url, notices = []) => ({
@@ -40,6 +66,8 @@ try {
 
   (async () => {
     try {
+      await build(toutiaoAdapterBuild);
+      const publishToutiaoArticle = require(path.join(bundleDir, "ttArticle-test.cjs")).default;
       const before = "https://mp.toutiao.com/profile_v4/graphic/publish";
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt(before), "draft", before), false);
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt(before, ["图片保存成功"]), "draft", before, ["图片保存成功"]), false);
@@ -62,31 +90,102 @@ try {
           },
         };
       };
-      const saveResponse = (content, code) => ({
-        url: () => "https://mp.toutiao.com/mp/agw/article/publish?source=mp",
-        request: () => ({ method: () => "POST", postData: () => new URLSearchParams({ title: "测试标题", content }).toString() }),
+      const saveResponse = (content, code, { title = "测试标题", pgcId = "", url = "https://mp.toutiao.com/mp/agw/article/publish?source=mp" } = {}) => ({
+        url: () => url,
+        request: () => ({ method: () => "POST", postData: () => new URLSearchParams({
+          title, content, ...(pgcId ? { pgc_id: pgcId } : {}),
+        }).toString() }),
         json: async () => ({ code, message: "private response" }),
+      });
+      const titleSavePage = (status, title = "测试标题") => ({
+        waitForFunction: async (callback, _options, ...args) => {
+          global.document = {
+            querySelector: () => ({ value: title }),
+            querySelectorAll: () => status ? [{
+              textContent: status,
+              getBoundingClientRect: () => ({ width: 20, height: 20 }),
+            }] : [],
+          };
+          if (!callback(...args)) throw new Error("title draft not confirmed");
+          return { dispose: async () => {} };
+        },
       });
       const responses = new EventEmitter();
       const save = tools.observeToutiaoDraftSave(responses);
       save.expect("测试标题", "完整测试正文");
-      responses.emit("response", saveResponse("", 7050)); // Earlier title-only autosave must be ignored.
+      responses.emit("response", saveResponse("", 0, { title: "其他标题" }));
       await new Promise(resolve => setImmediate(resolve));
+      assert.match((await save.waitForInitialTitleSave(1)).reason, /未观察到头条仅标题/u);
+      responses.emit("response", saveResponse("<p><br></p>", 0));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual((await save.waitForInitialTitleSave(1)).confirmed, true);
+      assert.strictEqual((await tools.confirmToutiaoInitialDraftAutosave(titleSavePage("草稿已保存"), "测试标题", save, 1)).confirmed, true);
+      assert.match((await tools.confirmToutiaoInitialDraftAutosave(titleSavePage("保存失败"), "测试标题", save, 1)).reason, /初始草稿尚未在页面确认/u);
+      assert.match((await tools.confirmToutiaoInitialDraftAutosave(titleSavePage("草稿已保存", "不匹配"), "测试标题", save, 1)).reason, /初始草稿尚未在页面确认/u);
       assert.match((await save.waitForFullBodySave(1)).reason, /未观察到头条完整正文/u);
-      responses.emit("response", saveResponse("<p>完整测试正文</p>", 0));
+      responses.emit("response", saveResponse("<p>完整测试正文</p>", 0, { pgcId: "draft-1" }));
       await new Promise(resolve => setImmediate(resolve));
       assert.strictEqual((await save.waitForFullBodySave(1)).confirmed, true);
       assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList(true), "测试标题", 1, save)).confirmed, true);
       assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList(false), "测试标题", 1, save)).confirmed, false);
       save.stop();
       assert.strictEqual(responses.listenerCount("response"), 0);
+      const initialFailureResponses = new EventEmitter();
+      const initialFailure = tools.observeToutiaoDraftSave(initialFailureResponses);
+      initialFailure.expect("测试标题", "完整测试正文");
+      initialFailureResponses.emit("response", saveResponse("", 7050));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.match((await initialFailure.waitForInitialTitleSave(1)).reason, /初始草稿保存接口拒绝（错误码 7050）/u);
+      initialFailure.stop();
       const failedResponses = new EventEmitter();
       const failedSave = tools.observeToutiaoDraftSave(failedResponses);
       failedSave.expect("测试标题", "完整测试正文");
+      failedResponses.emit("response", saveResponse("", 0));
+      await new Promise(resolve => setImmediate(resolve));
       failedResponses.emit("response", saveResponse("<p>完整测试正文</p>", 7050));
       await new Promise(resolve => setImmediate(resolve));
       assert.match((await failedSave.waitForFullBodySave(1)).reason, /错误码 7050/u);
       failedSave.stop();
+      const missingIdResponses = new EventEmitter();
+      const missingId = tools.observeToutiaoDraftSave(missingIdResponses);
+      missingId.expect("测试标题", "完整测试正文");
+      missingIdResponses.emit("response", saveResponse("", 0));
+      await new Promise(resolve => setImmediate(resolve));
+      missingIdResponses.emit("response", saveResponse("<p>完整测试正文</p>", 0));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.match((await missingId.waitForFullBodySave(1)).reason, /未携带草稿标识/u);
+      missingId.stop();
+
+      const sequence = [];
+      let releaseInitial;
+      const initialPending = new Promise(resolve => { releaseInitial = resolve; });
+      const observer = { expect: () => sequence.push("expect"), stop: () => sequence.push("stop") };
+      global.__ttAdapterMocks = {
+        observeToutiaoDraftSave: () => observer,
+        findArticleEditor: async () => "#editor",
+        fillArticleTitle: async () => { sequence.push("title"); },
+        confirmToutiaoInitialDraftAutosave: async () => { sequence.push("wait-initial"); return initialPending; },
+        renderUploadedArticle: () => "<p>完整测试正文</p>",
+        pasteArticleHtml: async () => { sequence.push("body"); },
+        confirmToutiaoBodyAccepted: async () => {},
+        fillArticleMetadata: async () => {},
+        currentUrl: () => before,
+        confirmToutiaoDraftAutosave: async () => ({ confirmed: true }),
+        finishArticle: async () => { sequence.push("finished"); },
+        failArticle: async () => { sequence.push("failed"); },
+      };
+      const draftData = { publishToDraft: true, data: { title: "测试标题", content: "完整测试正文", images: [] } };
+      const draftRun = publishToutiaoArticle({}, draftData, null, null);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepStrictEqual(sequence, ["expect", "title", "wait-initial"]);
+      releaseInitial({ confirmed: true });
+      await draftRun;
+      assert.deepStrictEqual(sequence, ["expect", "title", "wait-initial", "body", "finished", "stop"]);
+      sequence.length = 0;
+      global.__ttAdapterMocks.confirmToutiaoInitialDraftAutosave = async () => ({ confirmed: false, reason: "初始草稿未确认" });
+      await publishToutiaoArticle({}, draftData, null, null);
+      assert.deepStrictEqual(sequence, ["expect", "title", "failed", "stop"]);
+      delete global.__ttAdapterMocks;
 
       const originalDataTransfer = global.DataTransfer;
       const originalClipboardEvent = global.ClipboardEvent;
@@ -200,6 +299,7 @@ try {
         { path: image, mime: "image/png" }), /图片上传失败/u);
       console.log("test-article-adapters passed");
     } finally {
+      delete global.__ttAdapterMocks;
       delete global.document;
       delete global.location;
       fs.rmSync(temporary, { recursive: true, force: true });

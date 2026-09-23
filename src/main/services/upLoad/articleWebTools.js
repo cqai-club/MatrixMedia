@@ -136,26 +136,37 @@ export async function confirmToutiaoBodyAccepted(page, timeout = 7000) {
     : "头条正文未获得平台字数确认，未确认草稿保存");
 }
 
-/** Match the autosave of the completed article, not an earlier title-only save. */
+function emptyToutiaoContent(content) {
+  return !String(content || "").replace(/<[^>]*>/gu, "")
+    .replace(/&(?:nbsp|#160|#xA0);/giu, " ").trim();
+}
+
+/** Observe the initial title-only draft and its later full-body update separately. */
 export function observeToutiaoDraftSave(page) {
   let expectedTitle = "";
   let bodyProbe = "";
-  let matchedRequests = 0;
-  let lastCode;
-  let saved = false;
+  const initial = { requests: 0, lastCode: undefined, saved: false };
+  const full = { requests: 0, lastCode: undefined, saved: false, missingDraftId: false };
   const onResponse = async response => {
     try {
       const url = new URL(response.url());
       if (url.origin !== "https://mp.toutiao.com" || url.pathname !== "/mp/agw/article/publish"
         || response.request().method() !== "POST") return;
       const fields = new URLSearchParams(response.request().postData() || "");
-      if (!expectedTitle || !bodyProbe || fields.get("title")?.trim() !== expectedTitle
-        || !fields.get("content")?.includes(bodyProbe)) return;
-      matchedRequests++;
+      if (!expectedTitle || fields.get("title")?.trim() !== expectedTitle) return;
+      const content = fields.get("content") || "";
+      const titleOnly = emptyToutiaoContent(content);
+      const fullBody = Boolean(bodyProbe && content.includes(bodyProbe));
+      if (!titleOnly && !fullBody) return;
+      const stage = titleOnly ? initial : full;
+      stage.requests++;
       const result = await response.json();
       if (Number.isSafeInteger(result.code)) {
-        lastCode = result.code;
-        if (result.code === 0) saved = true;
+        stage.lastCode = result.code;
+        if (fullBody && !fields.get("pgc_id")) full.missingDraftId = true;
+        if (result.code === 0 && (titleOnly || (initial.saved && fields.get("pgc_id")))) {
+          stage.saved = true;
+        }
       }
     } catch { /* Navigation can dispose a response before its body is available. */ }
   };
@@ -167,16 +178,43 @@ export function observeToutiaoDraftSave(page) {
         .map(line => line.replace(/!\[[^\]]*\]\([^)]*\)/gu, "").replace(/^\s*(?:#+|>)\s*/u, "").trim())
         .find(line => line.length >= 4)?.slice(0, 16) || "";
     },
+    async waitForInitialTitleSave(timeout = 30000) {
+      const deadline = Date.now() + timeout;
+      while (!initial.saved && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      if (initial.saved) return { confirmed: true };
+      return { confirmed: false, reason: initial.lastCode !== undefined
+        ? `头条初始草稿保存接口拒绝（错误码 ${initial.lastCode}）`
+        : initial.requests > 0 ? "头条初始草稿保存响应未确认" : "未观察到头条仅标题的初始草稿保存请求" };
+    },
     async waitForFullBodySave(timeout = 30000) {
       const deadline = Date.now() + timeout;
-      while (!saved && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
-      if (saved) return { confirmed: true };
-      return { confirmed: false, reason: lastCode !== undefined
-        ? `头条完整正文草稿保存接口拒绝（错误码 ${lastCode}）`
-        : matchedRequests > 0 ? "头条完整正文草稿保存响应未确认" : "未观察到头条完整正文的草稿保存请求" };
+      while (!full.saved && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      if (full.saved) return { confirmed: true };
+      return { confirmed: false, reason: full.lastCode !== undefined && full.lastCode !== 0
+        ? `头条完整正文草稿保存接口拒绝（错误码 ${full.lastCode}）`
+        : full.missingDraftId ? "头条完整正文草稿保存请求未携带草稿标识"
+          : full.requests > 0 ? "头条完整正文草稿保存响应未确认" : "未观察到头条完整正文的草稿保存请求" };
     },
     stop: () => page.off("response", onResponse),
   };
+}
+
+/** Do not type the body until Toutiao has acknowledged its initial draft. */
+export async function confirmToutiaoInitialDraftAutosave(page, title, saveObserver, timeout = 30000) {
+  const saved = await saveObserver.waitForInitialTitleSave(timeout);
+  if (!saved.confirmed) return saved;
+  try {
+    const marker = await page.waitForFunction((expected, selector) => {
+      if (String(document.querySelector(selector)?.value || "").trim() !== expected) return false;
+      return [...document.querySelectorAll("span,div,p")].some(element => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0
+          && /^(?:草稿已保存|草稿保存成功|已自动保存|自动保存成功)$/u.test(String(element.textContent || "").trim());
+      });
+    }, { timeout: 10000 }, String(title || "").trim(), TITLE_SELECTOR);
+    await marker.dispose();
+    return { confirmed: true };
+  } catch { return { confirmed: false, reason: "头条初始草稿尚未在页面确认，未继续填写正文" }; }
 }
 
 /** Toutiao autosaves; a stale failure toast can coexist with a newer save. */
