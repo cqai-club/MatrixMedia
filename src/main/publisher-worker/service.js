@@ -107,6 +107,10 @@ export class PublisherWorkerService {
         && selected.some(account => account.platform === "tt" || account.platform === "bjh")) {
         throw new PublisherProtocolError("unsupported-content", "头条、百家号文章标签写入尚未验收，请先清空标签");
       }
+      if (contentType === "article" && String(source.manifest.summary || "").trim()
+        && selected.some(account => account.platform === "tt")) {
+        throw new PublisherProtocolError("unsupported-content", "头条当前文章编辑页没有可写的独立摘要，请清空摘要后再提交");
+      }
       for (const account of selected) {
         const required = capabilities.find(item => item.platform === account.platform)?.requiredFields[contentType] || [];
         const limit = capabilities.find(item => item.platform === account.platform)?.maxTitleLength[contentType];

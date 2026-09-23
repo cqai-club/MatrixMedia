@@ -104,21 +104,44 @@ export async function pasteArticleHtml(page, editor, html, plain, context = page
   throw new Error("文章正文未写入");
 }
 
+/** Keep only the business code; never persist response bodies or request content. */
+export function observeToutiaoDraftSave(page) {
+  let error = "";
+  const onResponse = async response => {
+    try {
+      const url = new URL(response.url());
+      if (url.origin !== "https://mp.toutiao.com" || url.pathname !== "/mp/agw/article/publish"
+        || response.request().method() !== "POST") return;
+      const result = await response.json();
+      if (Number.isSafeInteger(result.code)) {
+        error = result.code === 0 ? "" : `头条草稿保存接口拒绝（错误码 ${result.code}）`;
+      }
+    } catch { /* Navigation can dispose a response before its body is available. */ }
+  };
+  page.on("response", onResponse);
+  return { error: () => error, stop: () => page.off("response", onResponse) };
+}
+
 /** Toutiao's article editor autosaves; verify both its indicator and Drafts list. */
-export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000) {
+export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000, saveError = () => "") {
   try {
-    await page.waitForFunction(() => {
+    const marker = await page.waitForFunction(() => {
       const labels = [...document.querySelectorAll("span,div,p")]
         .map(element => String(element.textContent || "").replace(/\s+/gu, "").trim());
-      return labels.some(label => /^(?:草稿已保存|草稿保存成功|保存草稿成功|已自动保存|自动保存成功|已保存到草稿箱|已保存至草稿箱)$/u.test(label));
+      if (labels.some(label => /^(?:保存失败|草稿保存失败|自动保存失败)$/u.test(label))) return "failed";
+      if (labels.some(label => /^(?:草稿已保存|草稿保存成功|保存草稿成功|已自动保存|自动保存成功|已保存到草稿箱|已保存至草稿箱)$/u.test(label))) return "saved";
+      return false;
     }, { timeout });
+    const status = await marker.jsonValue();
+    await marker.dispose();
+    if (status === "failed") return { confirmed: false, reason: saveError() || "头条页面提示草稿保存失败" };
     await page.goto("https://mp.toutiao.com/profile_v4/manage/draft", {
       waitUntil: "domcontentloaded", timeout: 15000,
     });
     await page.waitForFunction(expected => String(document.body?.innerText || "").includes(expected),
       { timeout: 15000 }, title);
-    return true;
-  } catch { return false; }
+    return { confirmed: true };
+  } catch { return { confirmed: false, reason: saveError() || "头条草稿箱未确认这篇文章" }; }
 }
 
 export function renderUploadedArticle(data, uploadedUrls) {
@@ -131,25 +154,7 @@ export async function fillArticleMetadata(page, data) {
   const summary = String(data.data?.summary || "").trim();
   if (summary) {
     const selector = "textarea[placeholder*='摘要'],input[placeholder*='摘要']";
-    let field = await page.$(selector);
-    if (!field && data.pt === "头条") {
-      // The Toutiao editor can hide metadata below "发文设置".
-      const opened = await page.evaluate(() => {
-        const visible = element => {
-          const rect = element.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0;
-        };
-        const matches = element => String(element.textContent || "").replace(/\s+/gu, "") === "发文设置";
-        const control = [...document.querySelectorAll("button,[role='button'],a")].find(element => visible(element) && matches(element))
-          || [...document.querySelectorAll("span,div")].find(element => visible(element) && matches(element));
-        if (!control) return false;
-        control.click();
-        return true;
-      });
-      if (opened) {
-        field = await page.waitForSelector(selector, { visible: true, timeout: 3000 }).catch(() => null);
-      }
-    }
+    const field = await page.$(selector);
     if (!field) throw new Error("平台文章摘要字段不可用，请清空摘要后重试");
     await page.click(selector, { clickCount: 3 });
     await page.keyboard.press("Backspace");

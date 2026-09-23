@@ -4,6 +4,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { EventEmitter } = require("events");
 const { buildSync } = require("esbuild");
 
 const root = path.join(__dirname, "..");
@@ -55,34 +56,30 @@ try {
             global.document = atDashboard
               ? { body: { innerText: listed ? "测试标题" : "暂无草稿" } }
               : { querySelectorAll: () => [{ textContent: label }] };
-            if (!callback(...args)) throw new Error("not saved");
+            const result = callback(...args);
+            if (!result) throw new Error("not saved");
+            return { jsonValue: async () => result, dispose: async () => {} };
           },
         };
       };
-      assert.strictEqual(await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿保存中...", false), "测试标题"), false);
-      assert.strictEqual(await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿已保存", false), "测试标题"), false);
-      assert.strictEqual(await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿已保存", true), "测试标题"), true);
-
-      let settingsOpened = false;
-      let summaryTyped = "";
-      await tools.fillArticleMetadata({
-        $: async () => null,
-        evaluate: async callback => {
-          global.document = { querySelectorAll: selector => selector.includes("button") ? [{
-            textContent: "发文设置",
-            getBoundingClientRect: () => ({ width: 20, height: 20 }),
-            click: () => { settingsOpened = true; },
-          }] : [] };
-          return callback();
-        },
-        waitForSelector: async () => settingsOpened ? {} : null,
-        click: async () => {},
-        keyboard: { press: async () => {} },
-        type: async (_selector, value) => { summaryTyped = value; },
-        $eval: async () => summaryTyped,
-      }, { pt: "头条", data: { summary: "测试摘要" } });
-      assert.strictEqual(settingsOpened, true);
-      assert.strictEqual(summaryTyped, "测试摘要");
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿保存中...", false), "测试标题")).confirmed, false);
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(saveIndicator("保存失败", false), "测试标题")).reason, "头条页面提示草稿保存失败");
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿已保存", false), "测试标题")).confirmed, false);
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿已保存", true), "测试标题")).confirmed, true);
+      const responses = new EventEmitter();
+      const save = tools.observeToutiaoDraftSave(responses);
+      responses.emit("response", { url: () => "https://mp.toutiao.com/mp/agw/article/publish?source=mp",
+        request: () => ({ method: () => "POST" }), json: async () => ({ code: 7050, message: "private response" }) });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual(save.error(), "头条草稿保存接口拒绝（错误码 7050）");
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿保存中...", false), "测试标题", 1, save.error)).reason,
+        "头条草稿保存接口拒绝（错误码 7050）");
+      responses.emit("response", { url: () => "https://mp.toutiao.com/mp/agw/article/publish",
+        request: () => ({ method: () => "POST" }), json: async () => ({ code: 0 }) });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual(save.error(), "");
+      save.stop();
+      assert.strictEqual(responses.listenerCount("response"), 0);
 
       const originalDataTransfer = global.DataTransfer;
       const originalClipboardEvent = global.ClipboardEvent;

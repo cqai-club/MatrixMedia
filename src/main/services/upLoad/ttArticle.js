@@ -3,7 +3,7 @@
 import {
   captureArticleNotices, clickArticleAction, confirmPlatformOutcome, currentUrl, failArticle,
   confirmToutiaoDraftAutosave, fillArticleMetadata, fillArticleTitle, findArticleEditor, finishArticle,
-  pasteArticleHtml, renderUploadedArticle,
+  observeToutiaoDraftSave, pasteArticleHtml, renderUploadedArticle,
 } from "./articleWebTools.js";
 import { selectToutiaoCover, uploadToutiaoImage } from "./articleImageUpload.js";
 
@@ -11,6 +11,7 @@ import { selectToutiaoCover, uploadToutiaoImage } from "./articleImageUpload.js"
 export default async function publishToutiaoArticle(page, data, window, event) {
   const mode = data.publishToDraft === true ? "draft" : "publish";
   let clicked = false;
+  const saveObserver = mode === "draft" ? observeToutiaoDraftSave(page) : null;
   try {
     const editor = await findArticleEditor(page);
     await fillArticleTitle(page, data.data.title);
@@ -35,8 +36,9 @@ export default async function publishToutiaoArticle(page, data, window, event) {
     if (mode === "draft") {
       // The current Toutiao editor autosaves to Drafts; it has no explicit
       // "保存草稿" action. Never report success before its save indicator confirms.
-      const confirmed = await confirmToutiaoDraftAutosave(page, data.data.title);
-      await finishArticle(page, data, window, event, mode, before, confirmed);
+      const result = await confirmToutiaoDraftAutosave(page, data.data.title, 30000, saveObserver.error);
+      if (!result.confirmed) throw new Error(result.reason);
+      await finishArticle(page, data, window, event, mode, before, true);
       return;
     }
     const notices = await captureArticleNotices(page);
@@ -51,5 +53,7 @@ export default async function publishToutiaoArticle(page, data, window, event) {
     await finishArticle(page, data, window, event, mode, before, confirmed);
   } catch (error) {
     await failArticle(page, data, window, event, error, clicked);
+  } finally {
+    saveObserver?.stop();
   }
 }
