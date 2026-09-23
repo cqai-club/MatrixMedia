@@ -136,44 +136,61 @@ export async function confirmToutiaoBodyAccepted(page, timeout = 7000) {
     : "头条正文未获得平台字数确认，未确认草稿保存");
 }
 
-/** Keep only the business code; never persist response bodies or request content. */
+/** Match the autosave of the completed article, not an earlier title-only save. */
 export function observeToutiaoDraftSave(page) {
-  let error = "";
+  let expectedTitle = "";
+  let bodyProbe = "";
+  let matchedRequests = 0;
+  let lastCode;
+  let saved = false;
   const onResponse = async response => {
     try {
       const url = new URL(response.url());
       if (url.origin !== "https://mp.toutiao.com" || url.pathname !== "/mp/agw/article/publish"
         || response.request().method() !== "POST") return;
+      const fields = new URLSearchParams(response.request().postData() || "");
+      if (!expectedTitle || !bodyProbe || fields.get("title")?.trim() !== expectedTitle
+        || !fields.get("content")?.includes(bodyProbe)) return;
+      matchedRequests++;
       const result = await response.json();
       if (Number.isSafeInteger(result.code)) {
-        error = result.code === 0 ? "" : `头条草稿保存接口拒绝（错误码 ${result.code}）`;
+        lastCode = result.code;
+        if (result.code === 0) saved = true;
       }
     } catch { /* Navigation can dispose a response before its body is available. */ }
   };
   page.on("response", onResponse);
-  return { error: () => error, stop: () => page.off("response", onResponse) };
+  return {
+    expect(title, body) {
+      expectedTitle = String(title || "").trim();
+      bodyProbe = String(body || "").split(/\r?\n/u)
+        .map(line => line.replace(/!\[[^\]]*\]\([^)]*\)/gu, "").replace(/^\s*(?:#+|>)\s*/u, "").trim())
+        .find(line => line.length >= 4)?.slice(0, 16) || "";
+    },
+    async waitForFullBodySave(timeout = 30000) {
+      const deadline = Date.now() + timeout;
+      while (!saved && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      if (saved) return { confirmed: true };
+      return { confirmed: false, reason: lastCode !== undefined
+        ? `头条完整正文草稿保存接口拒绝（错误码 ${lastCode}）`
+        : matchedRequests > 0 ? "头条完整正文草稿保存响应未确认" : "未观察到头条完整正文的草稿保存请求" };
+    },
+    stop: () => page.off("response", onResponse),
+  };
 }
 
-/** Toutiao's article editor autosaves; verify both its indicator and Drafts list. */
-export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000, saveError = () => "") {
+/** Toutiao autosaves; a stale failure toast can coexist with a newer save. */
+export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000, saveObserver) {
+  const saved = await saveObserver.waitForFullBodySave(timeout);
+  if (!saved.confirmed) return saved;
   try {
-    const marker = await page.waitForFunction(() => {
-      const labels = [...document.querySelectorAll("span,div,p")]
-        .map(element => String(element.textContent || "").replace(/\s+/gu, "").trim());
-      if (labels.some(label => /^(?:保存失败|草稿保存失败|自动保存失败)$/u.test(label))) return "failed";
-      if (labels.some(label => /^(?:草稿已保存|草稿保存成功|保存草稿成功|已自动保存|自动保存成功|已保存到草稿箱|已保存至草稿箱)$/u.test(label))) return "saved";
-      return false;
-    }, { timeout });
-    const status = await marker.jsonValue();
-    await marker.dispose();
-    if (status === "failed") return { confirmed: false, reason: saveError() || "头条页面提示草稿保存失败" };
     await page.goto("https://mp.toutiao.com/profile_v4/manage/draft", {
       waitUntil: "domcontentloaded", timeout: 15000,
     });
     await page.waitForFunction(expected => String(document.body?.innerText || "").includes(expected),
       { timeout: 15000 }, title);
     return { confirmed: true };
-  } catch { return { confirmed: false, reason: saveError() || "头条草稿箱未确认这篇文章" }; }
+  } catch { return { confirmed: false, reason: "头条草稿箱未确认这篇文章" }; }
 }
 
 export function renderUploadedArticle(data, uploadedUrls) {

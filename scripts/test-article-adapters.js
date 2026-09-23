@@ -48,7 +48,7 @@ try {
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt("https://mp.toutiao.com/profile_v4/graphic/success"), "publish", before), true);
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt("https://mp.toutiao.com/profile_v4/graphic/edit?article_id=1"), "publish", before), false);
 
-      const saveIndicator = (label, listed) => {
+      const draftList = listed => {
         let atDashboard = false;
         return {
           goto: async url => {
@@ -56,33 +56,37 @@ try {
             atDashboard = true;
           },
           waitForFunction: async (callback, _options, ...args) => {
-            global.document = atDashboard
-              ? { body: { innerText: listed ? "测试标题" : "暂无草稿" } }
-              : { querySelectorAll: () => [{ textContent: label }] };
+            global.document = atDashboard ? { body: { innerText: listed ? "测试标题" : "暂无草稿" } } : {};
             const result = callback(...args);
             if (!result) throw new Error("not saved");
-            return { jsonValue: async () => result, dispose: async () => {} };
           },
         };
       };
-      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿保存中...", false), "测试标题")).confirmed, false);
-      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(saveIndicator("保存失败", false), "测试标题")).reason, "头条页面提示草稿保存失败");
-      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿已保存", false), "测试标题")).confirmed, false);
-      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿已保存", true), "测试标题")).confirmed, true);
+      const saveResponse = (content, code) => ({
+        url: () => "https://mp.toutiao.com/mp/agw/article/publish?source=mp",
+        request: () => ({ method: () => "POST", postData: () => new URLSearchParams({ title: "测试标题", content }).toString() }),
+        json: async () => ({ code, message: "private response" }),
+      });
       const responses = new EventEmitter();
       const save = tools.observeToutiaoDraftSave(responses);
-      responses.emit("response", { url: () => "https://mp.toutiao.com/mp/agw/article/publish?source=mp",
-        request: () => ({ method: () => "POST" }), json: async () => ({ code: 7050, message: "private response" }) });
+      save.expect("测试标题", "完整测试正文");
+      responses.emit("response", saveResponse("", 7050)); // Earlier title-only autosave must be ignored.
       await new Promise(resolve => setImmediate(resolve));
-      assert.strictEqual(save.error(), "头条草稿保存接口拒绝（错误码 7050）");
-      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿保存中...", false), "测试标题", 1, save.error)).reason,
-        "头条草稿保存接口拒绝（错误码 7050）");
-      responses.emit("response", { url: () => "https://mp.toutiao.com/mp/agw/article/publish",
-        request: () => ({ method: () => "POST" }), json: async () => ({ code: 0 }) });
+      assert.match((await save.waitForFullBodySave(1)).reason, /未观察到头条完整正文/u);
+      responses.emit("response", saveResponse("<p>完整测试正文</p>", 0));
       await new Promise(resolve => setImmediate(resolve));
-      assert.strictEqual(save.error(), "");
+      assert.strictEqual((await save.waitForFullBodySave(1)).confirmed, true);
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList(true), "测试标题", 1, save)).confirmed, true);
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList(false), "测试标题", 1, save)).confirmed, false);
       save.stop();
       assert.strictEqual(responses.listenerCount("response"), 0);
+      const failedResponses = new EventEmitter();
+      const failedSave = tools.observeToutiaoDraftSave(failedResponses);
+      failedSave.expect("测试标题", "完整测试正文");
+      failedResponses.emit("response", saveResponse("<p>完整测试正文</p>", 7050));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.match((await failedSave.waitForFullBodySave(1)).reason, /错误码 7050/u);
+      failedSave.stop();
 
       const originalDataTransfer = global.DataTransfer;
       const originalClipboardEvent = global.ClipboardEvent;

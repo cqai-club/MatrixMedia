@@ -28,6 +28,7 @@ export default async function publishToutiaoArticle(page, data, window, event) {
       });
     }
     const html = renderUploadedArticle(data, uploaded);
+    saveObserver?.expect(data.data.title, data.data.content);
     await pasteArticleHtml(page, editor, html, data.data.content, page, Object.values(uploaded), {
       preferKeyboardForPlain: true,
     });
@@ -39,7 +40,7 @@ export default async function publishToutiaoArticle(page, data, window, event) {
     if (mode === "draft") {
       // The current Toutiao editor autosaves to Drafts; it has no explicit
       // "保存草稿" action. Never report success before its save indicator confirms.
-      const result = await confirmToutiaoDraftAutosave(page, data.data.title, 30000, saveObserver.error);
+      const result = await confirmToutiaoDraftAutosave(page, data.data.title, 30000, saveObserver);
       if (!result.confirmed) throw new Error(result.reason);
       await finishArticle(page, data, window, event, mode, before, true);
       return;
