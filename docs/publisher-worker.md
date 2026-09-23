@@ -43,7 +43,7 @@ Supervisor 通过 stdin/stdout 使用逐行 JSON（NDJSON）。stdout 只写响�
 
 账号响应不含 Cookie 或 Chromium partition。提交记录只暴露提交时间、内容类型、内容 ID、模式和账号名称快照，不暴露内部执行状态。schema v1 视频记录迁移到 v2 时保持原 workId 和历史。发布前会同步校验所有目标账号登录态；文章、图文内容包先复制为不可变快照，再持久化，成功后才返回 `accepted: true`。
 
-文章和图文适配器采用能力门控。未完成真实平台验收时默认只开放原八个平台的视频能力；开发验收可设置 `EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES=juejin:article,blbl:article,xhs:image-note`。正式打开能力之前必须完成登录、草稿、一次受控直接发布与同 session 后台确认。掘金和 B站专栏当前只接受封面素材，正文图片适配尚未验收，提交前会明确拒绝。
+文章和图文适配器采用能力门控。未完成真实平台验收时默认只开放原八个平台的视频能力；开发验收可设置 `EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES=juejin:article,blbl:article,xhs:image-note`。正式打开能力之前必须完成登录、草稿、一次受控直接发布与同 session 后台确认。掘金和 B站专栏当前最多接受一张封面素材，正文图片适配尚未验收，提交前会明确拒绝；Worker 模式不会第二次点击掘金发布确认按钮。
 
 ## 恢复语义
 

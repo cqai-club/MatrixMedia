@@ -341,11 +341,15 @@ export default async function (page, data, window, event) {
       const btn = document.querySelector(sel);
       if (btn) btn.click();
     }, CONFIRM_BUTTON_SELECTOR);
-    await page.waitForTimeout(3000);
-    await page.evaluate((sel) => {
-      const btn = document.querySelector(sel);
-      if (btn) btn.click();
-    }, CONFIRM_BUTTON_SELECTOR);
+    // A second click can create a duplicate post. The embedded Worker never
+    // retries a potentially accepted publish action automatically.
+    if (!data.publisherWorker) {
+      await page.waitForTimeout(3000);
+      await page.evaluate((sel) => {
+        const btn = document.querySelector(sel);
+        if (btn) btn.click();
+      }, CONFIRM_BUTTON_SELECTOR);
+    }
     await waitForPostConfirmResult(page);
 
     event.reply("puppeteerFile-done", {

@@ -15,6 +15,7 @@ const root = path.join(__dirname, "..");
   const packages = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/content-package.js")));
   assert.deepStrictEqual(capabilities.platformCapabilities({}).find(item => item.platform === "juejin").contentTypes, []);
   assert.deepStrictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "juejin:article" }).find(item => item.platform === "juejin").modes.article, ["publish", "draft"]);
+  assert.strictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "juejin:article" }).find(item => item.platform === "juejin").maxAssets.article, 1);
   assert.deepStrictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "xhs:image-note" }).find(item => item.platform === "xhs").modes["image-note"], ["publish", "draft"]);
   assert.strictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "xhs:image-note" }).find(item => item.platform === "xhs").maxTitleLength["image-note"], 20);
   const frames = [];

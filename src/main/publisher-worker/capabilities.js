@@ -4,8 +4,8 @@ export const VIDEO_PLATFORMS = ["dy", "sph", "xhs", "blbl", "ks", "tt", "bjh", "
 export const ALL_PLATFORMS = [...VIDEO_PLATFORMS, "juejin"];
 
 const EXPERIMENTAL = {
-  "juejin:article": { requiredFields: ["category"], maxAssets: 20 },
-  "blbl:article": { requiredFields: [], maxAssets: 20 },
+  "juejin:article": { requiredFields: ["category"], maxAssets: 1 },
+  "blbl:article": { requiredFields: [], maxAssets: 1 },
   "xhs:image-note": { requiredFields: [], maxAssets: 20, maxTitleLength: 20 },
 };
 
