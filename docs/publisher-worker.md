@@ -43,7 +43,7 @@ Supervisor 通过 stdin/stdout 使用逐行 JSON（NDJSON）。stdout 只写响�
 
 账号响应不含 Cookie 或 Chromium partition。提交记录只暴露提交时间、内容类型、内容 ID、模式和账号名称快照，不暴露内部执行状态。schema v1 视频记录迁移到 v2 时保持原 workId 和历史。发布前会同步校验所有目标账号登录态；文章、图文内容包先复制为不可变快照，再持久化，成功后才返回 `accepted: true`。
 
-文章和图文适配器采用能力门控。未完成真实平台验收时默认只开放原八个平台的视频能力。已有实验开关 `juejin:article,blbl:article,xhs:image-note` 不变；头条与百家号改为**按提交方式分别开放**：`tt:article:draft`、`tt:article:publish`、`bjh:article:draft`、`bjh:article:publish`。可用 `EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES` 设置逗号分隔的开关，仅在对应方式真实验收后打开。代码可用不等于平台能力已验收，默认四个新开关均关闭。
+用户要求开放已有适配器供自行验证。Worker 现在默认开放掘金、B站、头条、百家号文章以及小红书图文的草稿与立即发布；仍拒绝没有实际适配器的内容类型组合，不会回落到视频处理器。开放能力不等于真实平台验收通过：平台权限、页面改版和风控仍可能使任务在接受后失败或结果不明确，用户须到对应账号后台确认。`EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES` 不再决定这些能力。
 
 头条与百家号文章通过按平台、内容类型、提交方式分流的适配器处理；文章不会进入同平台视频处理器。公共 Markdown 中的 `ebao-asset://<UUID>` 只允许引用本草稿素材，接受前校验 SHA-256（旧素材至少检查尺寸、格式和快照前后哈希），随后复制不可变内容快照。Worker 使用账号原有 partition 上传正文图，替换为平台 HTTPS 图片地址后再写入文章编辑器；上传失败时不点击保存/发布。封面独立选取，可复用正文图片。平台没有可观察的草稿/发布确认，或点击后遇到验证、超时、异常时记为内部未知，不自动重试。掘金和 B站专栏仍最多接受一张封面，正文插图不开放。
 
