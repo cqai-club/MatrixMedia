@@ -6,6 +6,9 @@ const os = require("os");
 const path = require("path");
 const { EventEmitter } = require("events");
 const { buildSync } = require("esbuild");
+const { Keyboard } = require("puppeteer-core");
+
+assert.strictEqual(typeof Keyboard.prototype.sendCharacter, "function");
 
 const root = path.join(__dirname, "..");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "ebao-article-adapter-test-"));
@@ -92,13 +95,14 @@ try {
         constructor(type, options) { this.type = type; this.clipboardData = options.clipboardData; }
       };
       const editorPage = ({ paste = false, command = false } = {}) => {
-        const state = { html: "<p></p>", text: "", inserted: 0 };
+        const state = { html: "<p></p>", text: "", inserted: 0, pasteEvents: 0 };
         const element = {
           get innerHTML() { return state.html; },
           get textContent() { return state.text; },
           focus() {},
           querySelectorAll: () => [],
           dispatchEvent(event) {
+            state.pasteEvents++;
             if (paste) {
               state.html = event.clipboardData.getData("text/html");
               state.text = event.clipboardData.getData("text/plain");
@@ -119,7 +123,7 @@ try {
           waitForFunction: async (callback, _options, ...args) => {
             if (!callback(...args)) throw new Error("not written");
           },
-          keyboard: { insertText: async value => {
+          keyboard: { sendCharacter: async value => {
             state.inserted++;
             state.html = value;
             state.text = value;
@@ -138,9 +142,40 @@ try {
         const textFallback = editorPage();
         await tools.pasteArticleHtml(textFallback.page, "#editor", "<p>Plain</p>", "Plain");
         assert.strictEqual(textFallback.state.inserted, 1);
+        const toutiaoPlain = editorPage({ paste: true });
+        await tools.pasteArticleHtml(toutiaoPlain.page, "#editor", "<p>Plain</p>", "Plain", toutiaoPlain.page,
+          [], { preferKeyboardForPlain: true });
+        assert.strictEqual(toutiaoPlain.state.inserted, 1);
+        assert.strictEqual(toutiaoPlain.state.pasteEvents, 0);
         const formattedFailure = editorPage();
         await assert.rejects(tools.pasteArticleHtml(formattedFailure.page, "#editor", "<h1>Title</h1>", "# Title"), /文章正文未写入/u);
         assert.strictEqual(formattedFailure.state.inserted, 0);
+        const toutiaoRich = editorPage({ paste: true });
+        await tools.pasteArticleHtml(toutiaoRich.page, "#editor", "<h1>Title</h1>", "# Title", toutiaoRich.page,
+          [], { preferKeyboardForPlain: true });
+        assert.strictEqual(toutiaoRich.state.inserted, 0);
+        assert.strictEqual(toutiaoRich.state.pasteEvents, 1);
+
+        const indicator = count => ({
+          querySelectorAll: () => count === null ? [] : [{
+            closest: () => null,
+            getBoundingClientRect: () => ({ width: 20 }),
+            textContent: `共 ${count} 字`,
+          }],
+        });
+        const counterPage = count => ({
+          waitForFunction: async callback => {
+            global.document = indicator(count);
+            if (!callback()) throw new Error("not accepted");
+          },
+          evaluate: async callback => {
+            global.document = indicator(count);
+            return callback();
+          },
+        });
+        await tools.confirmToutiaoBodyAccepted(counterPage(12), 1);
+        await assert.rejects(tools.confirmToutiaoBodyAccepted(counterPage(0), 1), /字数仍为 0/u);
+        await assert.rejects(tools.confirmToutiaoBodyAccepted(counterPage(null), 1), /未获得平台字数确认/u);
       } finally {
         global.DataTransfer = originalDataTransfer;
         global.ClipboardEvent = originalClipboardEvent;

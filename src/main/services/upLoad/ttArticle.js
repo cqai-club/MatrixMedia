@@ -2,7 +2,7 @@
 
 import {
   captureArticleNotices, clickArticleAction, confirmPlatformOutcome, currentUrl, failArticle,
-  confirmToutiaoDraftAutosave, fillArticleMetadata, fillArticleTitle, findArticleEditor, finishArticle,
+  confirmToutiaoBodyAccepted, confirmToutiaoDraftAutosave, fillArticleMetadata, fillArticleTitle, findArticleEditor, finishArticle,
   observeToutiaoDraftSave, pasteArticleHtml, renderUploadedArticle,
 } from "./articleWebTools.js";
 import { selectToutiaoCover, uploadToutiaoImage } from "./articleImageUpload.js";
@@ -28,7 +28,10 @@ export default async function publishToutiaoArticle(page, data, window, event) {
       });
     }
     const html = renderUploadedArticle(data, uploaded);
-    await pasteArticleHtml(page, editor, html, data.data.content, page, Object.values(uploaded));
+    await pasteArticleHtml(page, editor, html, data.data.content, page, Object.values(uploaded), {
+      preferKeyboardForPlain: true,
+    });
+    await confirmToutiaoBodyAccepted(page);
     await fillArticleMetadata(page, data);
     if (coverUrl) await selectToutiaoCover(page, coverUrl);
 

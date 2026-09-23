@@ -42,7 +42,7 @@ export async function fillArticleTitle(page, title) {
   if (actual.trim() !== title.trim()) throw new Error("文章标题未写入");
 }
 
-export async function pasteArticleHtml(page, editor, html, plain, context = page, expectedImages = []) {
+export async function pasteArticleHtml(page, editor, html, plain, context = page, expectedImages = [], options = {}) {
   const probe = plain.split(/\r?\n/u)
     .map(line => line.replace(/!\[[^\]]*\]\([^)]*\)/gu, "").replace(/^\s*(?:#+|>)\s*/u, "").trim())
     .find(Boolean)?.slice(0, 16) || "";
@@ -62,6 +62,17 @@ export async function pasteArticleHtml(page, editor, html, plain, context = page
   };
   const unchanged = () => context.evaluate((selector, original) =>
     (document.querySelector(selector)?.innerHTML || "") === original, editor, before);
+  const plainArticle = expectedImages.length === 0
+    && !/<(?:h[1-6]|blockquote|strong|em|ul|ol|li|a|pre|code|table|img)\b/iu.test(html);
+
+  // Toutiao's ProseMirror can display a synthetic paste in the DOM while its
+  // document model (and the site's word counter/save payload) stays empty.
+  // CDP keyboard insertion takes the editor's actual input path instead.
+  if (options.preferKeyboardForPlain && plainArticle) {
+    await page.keyboard.sendCharacter(plain);
+    if (await written()) return;
+    if (!await unchanged()) throw new Error("文章正文未完整写入");
+  }
 
   // Worker windows are hidden: macOS Cmd+V depends on a focused native window
   // and can leave the editor empty. Deliver HTML to the editor's paste handler.
@@ -96,12 +107,33 @@ export async function pasteArticleHtml(page, editor, html, plain, context = page
 
   // CDP text insertion needs no OS clipboard. Only use it for unformatted
   // articles, never silently strip Markdown formatting or uploaded images.
-  if (expectedImages.length === 0 && !/<(?:h[1-6]|blockquote|strong|em|ul|ol|li|a|pre|code|table|img)\b/iu.test(html)) {
+  if (plainArticle && !options.preferKeyboardForPlain) {
     await context.click(editor);
-    await page.keyboard.insertText(plain);
+    await page.keyboard.sendCharacter(plain);
     if (await written()) return;
   }
   throw new Error("文章正文未写入");
+}
+
+/** A visible DOM string is not proof that Toutiao's editor accepted content. */
+export async function confirmToutiaoBodyAccepted(page, timeout = 7000) {
+  const readCount = () => {
+    const values = [...document.querySelectorAll("span,div,p,label")]
+      .filter(element => !element.closest("[contenteditable='true']")
+        && element.getBoundingClientRect().width > 0)
+      .map(element => /^共\s*(\d+)\s*字$/u.exec(String(element.textContent || "").trim())?.[1])
+      .filter(value => value !== undefined)
+      .map(Number);
+    return values.length ? Math.max(...values) : null;
+  };
+  try {
+    await page.waitForFunction(readCount, { timeout });
+  } catch { /* Report the current indicator value below. */ }
+  const count = await page.evaluate(readCount);
+  if (count > 0) return;
+  throw new Error(count === 0
+    ? "头条正文未进入平台编辑器（字数仍为 0），未确认草稿保存"
+    : "头条正文未获得平台字数确认，未确认草稿保存");
 }
 
 /** Keep only the business code; never persist response bodies or request content. */
