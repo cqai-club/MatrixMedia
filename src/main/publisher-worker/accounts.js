@@ -8,6 +8,7 @@ import ptConfig from "../config/ptConfig";
 import { applyAccountProxyToSession } from "../services/proxyConfig.js";
 import { PublisherProtocolError } from "./protocol.js";
 import { publicAccount } from "./store.js";
+import { publisherUserAgent } from "./userAgent.js";
 
 export const PLATFORM_TO_PT = {
   dy: "抖音", sph: "视频号", xhs: "小红书", blbl: "哔哩哔哩",
@@ -197,7 +198,8 @@ export class PublisherAccounts {
     this.windows.set(account.partition, win);
     win.on("closed", () => { if (this.windows.get(account.partition) === win) this.windows.delete(account.partition); });
     win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    if (cfg.useragent) win.webContents.setUserAgent(cfg.useragent);
+    const userAgent = publisherUserAgent(account.pt, cfg.useragent);
+    if (userAgent) win.webContents.setUserAgent(userAgent);
     try {
       await win.loadURL(url);
     } catch (error) {

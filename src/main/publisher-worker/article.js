@@ -5,6 +5,7 @@ import ptConfig from "../config/ptConfig";
 import { cancelPuppeteerTasks, runPuppeteerTask } from "../services/puppeteerFile";
 import { PublisherProtocolError } from "./protocol.js";
 import { articleImageIds } from "./article-content.js";
+import { publisherUserAgent } from "./userAgent.js";
 
 const TIMEOUT_MS = 25 * 60 * 1000;
 const DISCLOSURES = {
@@ -185,7 +186,7 @@ function runWebArticle(account, submission, manifest, url) {
     show: false,
     mmCliSuppressWindow: true,
     closeWindowAfterPublish: true,
-    useragent: cfg.useragent,
+    useragent: publisherUserAgent(account.pt, cfg.useragent),
     partition: account.partition,
     phone: account.id,
     pt: account.pt,
@@ -199,7 +200,7 @@ function runWebArticle(account, submission, manifest, url) {
 
 export function runToutiaoArticle(account, submission, manifest) {
   if (account.platform !== "tt") throw new PublisherProtocolError("unsupported-platform", "头条文章适配器不可用");
-  return runWebArticle(account, submission, manifest, "https://mp.toutiao.com/profile_v4/graphic/publish");
+  return runWebArticle(account, submission, manifest, "https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc");
 }
 
 export function runBaijiahaoArticle(account, submission, manifest) {

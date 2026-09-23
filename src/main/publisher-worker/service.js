@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { runSingleFilePublish } from "../services/publishVideo.js";
+import ptConfig from "../config/ptConfig.js";
 import { PublisherProtocolError } from "./protocol.js";
 import { PublisherStore, publicSubmission } from "./store.js";
 import { PublisherAccounts } from "./accounts.js";
@@ -11,6 +12,7 @@ import { accepts, platformCapabilities } from "./capabilities.js";
 import { captureContentPackage, readContentPackage } from "./content-package.js";
 import { runBilibiliArticle, runJuejinArticle, runXhsImageNote, runToutiaoArticle, runBaijiahaoArticle } from "./article.js";
 import { articleImageIds } from "./article-content.js";
+import { publisherUserAgent } from "./userAgent.js";
 
 function text(value, label, max) {
   const normalized = String(value || "").trim();
@@ -213,6 +215,7 @@ export class PublisherWorkerService {
               creativeStatement: submission.creativeStatement,
               draft: submission.mode === "draft", show: false,
               closeWindowAfterPublish: true, useRealBrowser: false,
+              useragent: publisherUserAgent(account.pt, ptConfig[account.pt]?.useragent),
               publisherWorker: true, proxyOverride: account.proxy,
               publishOptions: { maxAttempts: 1 },
             }));

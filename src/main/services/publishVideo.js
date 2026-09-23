@@ -136,7 +136,7 @@ async function runSingleFilePublishInner(
     publishToDraft: effectivePublishMode.publishToDraft,
     publishOptions: v.publishOptions || {},
     closeWindowAfterPublish: v.show ? v.closeWindowAfterPublish : true,
-    useragent: cfg.useragent,
+    useragent: v.publisherWorker && v.useragent ? v.useragent : cfg.useragent,
     partition: v.partition,
     phone: derivePhoneForRecord(v),
     // The e宝 Worker owns UUID-based Chromium partitions and may carry an
@@ -172,7 +172,7 @@ async function runSingleFilePublishInner(
         ? sourceFile
         : resolvedFile,
     remoteFileUrl: isRemotePublishFile(sourceFile) ? sourceFile : "",
-    useragent: cfg.useragent,
+    useragent: v.publisherWorker && v.useragent ? v.useragent : cfg.useragent,
     phone: derivePhoneForRecord(v),
     partition: v.partition,
     url: cfg.listIndex,
