@@ -24,7 +24,9 @@ export default async function publishXhsImageNote(page, data, window, event) {
     await page.waitForSelector(titleSelector, { visible: true, timeout: WAIT_SELECTOR_APPEAR_MS });
     await page.click(titleSelector, { clickCount: 3 });
     await page.keyboard.press("Backspace");
-    await page.type(titleSelector, String(data.data?.title || "").slice(0, 20), { delay: 60 });
+    const title = String(data.data?.title || "");
+    if (title.length > 20) throw new Error("小红书图文标题不能超过20字");
+    await page.type(titleSelector, title, { delay: 60 });
     const editorSelector = ".tiptap.ProseMirror";
     await page.waitForSelector(editorSelector, { visible: true, timeout: WAIT_SELECTOR_APPEAR_MS });
     await page.click(editorSelector);
@@ -42,7 +44,10 @@ export default async function publishXhsImageNote(page, data, window, event) {
       return Boolean(editor && String(editor.textContent || "").trim());
     }, editorSelector);
     if (body && !written) throw new Error("小红书图文正文未写入");
-    await selectXhsCreativeStatement(page, data);
+    const statementSelected = await selectXhsCreativeStatement(page, data);
+    if (data.data?.creativeStatement !== "none" && !statementSelected) {
+      throw new Error("小红书内容声明未确认选中，请在平台后台检查后重试");
+    }
 
     const host = await page.waitForSelector("xhs-publish-btn", { visible: true, timeout: WAIT_SELECTOR_APPEAR_MS });
     if (!host) throw new Error("未找到小红书提交按钮");

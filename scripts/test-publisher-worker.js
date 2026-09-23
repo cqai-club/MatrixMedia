@@ -16,6 +16,7 @@ const root = path.join(__dirname, "..");
   assert.deepStrictEqual(capabilities.platformCapabilities({}).find(item => item.platform === "juejin").contentTypes, []);
   assert.deepStrictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "juejin:article" }).find(item => item.platform === "juejin").modes.article, ["publish", "draft"]);
   assert.deepStrictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "xhs:image-note" }).find(item => item.platform === "xhs").modes["image-note"], ["publish", "draft"]);
+  assert.strictEqual(capabilities.platformCapabilities({ EBAO_PUBLISHER_EXPERIMENTAL_CAPABILITIES: "xhs:image-note" }).find(item => item.platform === "xhs").maxTitleLength["image-note"], 20);
   const frames = [];
   const errors = [];
   const decode = protocol.createFrameDecoder(frame => frames.push(frame), error => errors.push(error));
@@ -23,6 +24,11 @@ const root = path.join(__dirname, "..");
   decode(Buffer.from('health"}\n{"id":"2","method":"accounts.list"}\n'));
   assert.deepStrictEqual(frames.map(frame => frame.id), ["1", "2"]);
   assert.strictEqual(errors.length, 0);
+  const utf8 = Buffer.from('{"id":"3","method":"测试"}\n');
+  const splitAt = utf8.indexOf(Buffer.from("测")[0]);
+  decode(utf8.subarray(0, splitAt + 1));
+  decode(utf8.subarray(splitAt + 1));
+  assert.strictEqual(frames[2].method, "测试");
   decode(Buffer.from("not-json\n"));
   assert.strictEqual(errors.at(-1).code, "invalid-json");
   decode(Buffer.from(`${"x".repeat(protocol.MAX_FRAME_BYTES + 1)}\n`));
@@ -55,6 +61,17 @@ const root = path.join(__dirname, "..");
     assert.ok(!Object.prototype.hasOwnProperty.call(restored.listSubmissions()[0], "state"));
     assert.ok(!Object.prototype.hasOwnProperty.call(restored.listSubmissions()[0], "file"));
     assert.strictEqual(restored.submissionsState.schemaVersion, 2);
+
+    const legacyDir = path.join(temporary, "legacy");
+    fs.mkdirSync(legacyDir);
+    fs.writeFileSync(path.join(legacyDir, "submissions.json"), JSON.stringify({
+      schemaVersion: 1,
+      submissions: [{ id: "legacy", workId: "old-work", createdAt: "2026-01-01T00:00:00Z", title: "旧视频", mode: "draft", state: "completed", targets: [] }],
+    }));
+    const migrated = new storeModule.PublisherStore(legacyDir);
+    assert.strictEqual(migrated.submissionsState.schemaVersion, 2);
+    assert.deepStrictEqual(migrated.listSubmissions()[0].contentType, "video");
+    assert.deepStrictEqual(migrated.listSubmissions()[0].contentId, "old-work");
 
     const contentId = "11111111-1111-4111-8111-111111111111";
     const source = path.join(temporary, "contents", contentId);

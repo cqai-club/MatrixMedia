@@ -72,6 +72,18 @@ export default async function publishBilibiliArticle(page, data, window, event) 
     }, selector, probe);
     if (!bodyWritten) throw new Error("哔哩哔哩专栏正文未写入");
 
+    const tags = Array.isArray(data.data?.tags) ? data.data.tags : [];
+    if (tags.length) {
+      const topicSelector = 'input[placeholder*="话题"],input[placeholder*="标签"]';
+      const topic = await page.$(topicSelector);
+      if (!topic) throw new Error("未找到哔哩哔哩专栏话题输入框");
+      for (const tag of tags) {
+        await topic.click();
+        await page.keyboard.type(String(tag), { delay: 50 });
+        await page.keyboard.press("Enter");
+      }
+    }
+
     if (data.data?.coverPath) {
       const coverSelector = ".cover-upload input[type='file'],.cover-selector input[type='file'],input[type='file'][accept*='image']";
       const input = await page.$(coverSelector);

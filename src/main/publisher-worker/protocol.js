@@ -1,5 +1,7 @@
 "use strict";
 
+import { StringDecoder } from "string_decoder";
+
 const MAX_FRAME_BYTES = 1024 * 1024;
 
 export class PublisherProtocolError extends Error {
@@ -22,8 +24,9 @@ export function encodeError(id, error) {
 
 export function createFrameDecoder(onFrame, onError) {
   let pending = "";
+  const decoder = new StringDecoder("utf8");
   return chunk => {
-    pending += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+    pending += Buffer.isBuffer(chunk) ? decoder.write(chunk) : String(chunk);
     for (;;) {
       const newline = pending.indexOf("\n");
       if (newline < 0) {

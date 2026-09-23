@@ -6,7 +6,7 @@ import { randomUUID } from "crypto";
 import { PublisherProtocolError } from "./protocol.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const MAX_MANIFEST = 2 * 1024 * 1024 + 128 * 1024;
+const MAX_MANIFEST = 4 * 1024 * 1024;
 const MAX_ASSET = 20 * 1024 * 1024;
 
 function invalid(message) {

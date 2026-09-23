@@ -204,6 +204,7 @@ export async function selectXhsCreativeStatement(page, data) {
       "[xhs] 点了选项但未观察到 placeholder 被替换，可能没真正选中: " + label
     );
   }
+  return selectedNow === label.replace(/\s+/g, "").trim();
 }
 
 async function closeCheckedXhsPkCoverSwitch(page) {

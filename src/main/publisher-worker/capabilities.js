@@ -6,7 +6,7 @@ export const ALL_PLATFORMS = [...VIDEO_PLATFORMS, "juejin"];
 const EXPERIMENTAL = {
   "juejin:article": { requiredFields: ["category"], maxAssets: 20 },
   "blbl:article": { requiredFields: [], maxAssets: 20 },
-  "xhs:image-note": { requiredFields: [], maxAssets: 20 },
+  "xhs:image-note": { requiredFields: [], maxAssets: 20, maxTitleLength: 20 },
 };
 
 /** Only verified capabilities are advertised in production. */
@@ -19,6 +19,7 @@ export function platformCapabilities(env = process.env) {
     const modes = isVideo ? { video: ["publish", "draft"] } : {};
     const requiredFields = {};
     const maxAssets = {};
+    const maxTitleLength = {};
     for (const [key, settings] of Object.entries(EXPERIMENTAL)) {
       const [target, type] = key.split(":");
       if (target !== platform || !enabled.has(key)) continue;
@@ -26,8 +27,9 @@ export function platformCapabilities(env = process.env) {
       modes[type] = ["publish", "draft"];
       requiredFields[type] = settings.requiredFields;
       maxAssets[type] = settings.maxAssets;
+      if (settings.maxTitleLength) maxTitleLength[type] = settings.maxTitleLength;
     }
-    return { platform, contentTypes: types, modes, requiredFields, maxAssets };
+    return { platform, contentTypes: types, modes, requiredFields, maxAssets, maxTitleLength };
   });
 }
 

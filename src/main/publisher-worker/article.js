@@ -6,6 +6,20 @@ import { runPuppeteerTask } from "../services/puppeteerFile";
 import { PublisherProtocolError } from "./protocol.js";
 
 const TIMEOUT_MS = 25 * 60 * 1000;
+const DISCLOSURES = {
+  none: "",
+  ai_generated: "本文包含 AI 生成内容",
+  fiction: "虚构演绎，仅供娱乐",
+  marketing: "营销推广",
+  personal_opinion: "个人观点，仅供参考",
+  repost: "转载",
+  self_made_no_repost: "自制，禁止转载",
+};
+
+export function withDisclosure(body, statement) {
+  const text = DISCLOSURES[statement] || "";
+  return text ? `${body.trimEnd()}\n\n> 内容声明：${text}` : body;
+}
 
 function runWorkerTask(payload, mode) {
   const taskId = payload.taskId;
@@ -57,7 +71,7 @@ export function runJuejinArticle(account, submission, manifest) {
     textOtherName: manifest.title,
     data: {
       title: manifest.title,
-      content: manifest.body,
+      content: withDisclosure(manifest.body, manifest.creativeStatement),
       coverPath,
       category: fields.category || "前端",
       tags: manifest.tags.join(" "),
@@ -122,7 +136,7 @@ export function runBilibiliArticle(account, submission, manifest) {
     bookName: manifest.title,
     data: {
       title: manifest.title,
-      content: manifest.body,
+      content: withDisclosure(manifest.summary ? `${manifest.summary}\n\n${manifest.body}` : manifest.body, manifest.creativeStatement),
       summary: manifest.summary,
       tags: manifest.tags,
       coverPath,

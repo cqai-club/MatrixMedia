@@ -93,6 +93,14 @@ export class PublisherWorkerService {
       source = readContentPackage(params.contentDirectory, params.contentId, params.revision, contentType);
       for (const account of selected) {
         const required = capabilities.find(item => item.platform === account.platform)?.requiredFields[contentType] || [];
+        const limit = capabilities.find(item => item.platform === account.platform)?.maxTitleLength[contentType];
+        if (limit && source.manifest.title.length > limit) {
+          throw new PublisherProtocolError("invalid-content", `${account.displayName}标题不能超过${limit}字`);
+        }
+        const assetLimit = capabilities.find(item => item.platform === account.platform)?.maxAssets[contentType];
+        if (assetLimit && source.manifest.assets.length > assetLimit) {
+          throw new PublisherProtocolError("invalid-content", `${account.displayName}素材不能超过${assetLimit}个`);
+        }
         for (const field of required) {
           if (!String(source.manifest.platformFields?.[account.platform]?.[field] || "").trim()) {
             throw new PublisherProtocolError("invalid-content", `${account.displayName}缺少${field}`);
@@ -151,8 +159,6 @@ export class PublisherWorkerService {
     }
   }
 
-  snapshotRevision(submission) { return submission.revision; }
-
   kick() {
     if (this.running || this.stopping) return;
     setImmediate(() => { void this.drain(); });
@@ -189,7 +195,7 @@ export class PublisherWorkerService {
             request.sort((left, right) => left.platform === "视频号" ? -1 : right.platform === "视频号" ? 1 : 0);
             for (const item of request) results.push(await runSingleFilePublish(item));
           } else {
-            const content = readContentPackage(submission.snapshotDirectory, submission.contentId, this.snapshotRevision(submission), submission.contentType, false);
+            const content = readContentPackage(submission.snapshotDirectory, submission.contentId, submission.revision, submission.contentType, false);
             for (const account of accounts) {
               if (account.platform === "juejin" && submission.contentType === "article") {
                 results.push(await runJuejinArticle(account, submission, content.manifest));
