@@ -1,6 +1,5 @@
 "use strict";
 
-import { clipboard } from "electron";
 import { replyPublishFailure, replyPublishOutcome, readPageUrl } from "./publishOutcome.js";
 import { renderArticleHtml } from "../../publisher-worker/article-content.js";
 
@@ -44,30 +43,82 @@ export async function fillArticleTitle(page, title) {
 }
 
 export async function pasteArticleHtml(page, editor, html, plain, context = page, expectedImages = []) {
-  const saved = { html: clipboard.readHTML(), text: clipboard.readText() };
-  try {
-    clipboard.write({ html, text: plain });
-    await context.click(editor);
-    const modifier = process.platform === "darwin" ? "Meta" : "Control";
-    await page.keyboard.down(modifier);
-    try {
-      await page.keyboard.press("KeyA");
-      await page.keyboard.press("KeyV");
-    }
-    finally { await page.keyboard.up(modifier).catch(() => {}); }
-  } finally {
-    clipboard.write(saved);
-  }
   const probe = plain.split(/\r?\n/u)
     .map(line => line.replace(/!\[[^\]]*\]\([^)]*\)/gu, "").replace(/^\s*(?:#+|>)\s*/u, "").trim())
     .find(Boolean)?.slice(0, 16) || "";
-  const written = await context.evaluate((selector, expected, images) => {
+  if (!probe) throw new Error("文章正文没有可验证的文本");
+  await context.click(editor);
+  const before = await context.evaluate(selector => document.querySelector(selector)?.innerHTML || "", editor);
+  const written = async () => {
+    try {
+      await context.waitForFunction((selector, expected, images) => {
+        const element = document.querySelector(selector);
+        if (!element || !(element.textContent || "").includes(expected)) return false;
+        const actualImages = [...element.querySelectorAll("img")].map(img => img.getAttribute("src"));
+        return images.every(url => actualImages.includes(url));
+      }, { timeout: 1800 }, editor, probe, expectedImages);
+      return true;
+    } catch { return false; }
+  };
+  const unchanged = () => context.evaluate((selector, original) =>
+    (document.querySelector(selector)?.innerHTML || "") === original, editor, before);
+
+  // Worker windows are hidden: macOS Cmd+V depends on a focused native window
+  // and can leave the editor empty. Deliver HTML to the editor's paste handler.
+  await context.evaluate((selector, rich, text) => {
     const element = document.querySelector(selector);
-    if (!element || !expected || !(element.textContent || "").includes(expected)) return false;
-    const actualImages = [...element.querySelectorAll("img")].map(img => img.getAttribute("src"));
-    return images.every(url => actualImages.includes(url));
-  }, editor, probe, expectedImages);
-  if (!written) throw new Error("文章正文未写入");
+    if (!element) return;
+    element.focus();
+    try {
+      const data = new DataTransfer();
+      data.setData("text/html", rich);
+      data.setData("text/plain", text);
+      element.dispatchEvent(new ClipboardEvent("paste", {
+        bubbles: true, cancelable: true, clipboardData: data,
+      }));
+    } catch { /* The next contenteditable strategy may still work. */ }
+  }, editor, html, plain);
+  if (await written()) return;
+  if (!await unchanged()) throw new Error("文章正文未完整写入");
+
+  // Contenteditable editors that ignore synthetic paste may still accept the
+  // browser's insertHTML command, which preserves headings and inline images.
+  await context.evaluate((selector, rich) => {
+    const element = document.querySelector(selector);
+    if (element) {
+      element.focus();
+      try { document.execCommand("insertHTML", false, rich); }
+      catch { /* CDP text insertion remains available for plain articles. */ }
+    }
+  }, editor, html);
+  if (await written()) return;
+  if (!await unchanged()) throw new Error("文章正文未完整写入");
+
+  // CDP text insertion needs no OS clipboard. Only use it for unformatted
+  // articles, never silently strip Markdown formatting or uploaded images.
+  if (expectedImages.length === 0 && !/<(?:h[1-6]|blockquote|strong|em|ul|ol|li|a|pre|code|table|img)\b/iu.test(html)) {
+    await context.click(editor);
+    await page.keyboard.insertText(plain);
+    if (await written()) return;
+  }
+  throw new Error("文章正文未写入");
+}
+
+/** Toutiao's article editor autosaves; verify both its indicator and Drafts list. */
+export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000) {
+  try {
+    await page.waitForFunction(() => {
+      const labels = [...document.querySelectorAll("span,div,p")]
+        .map(element => String(element.textContent || "").replace(/\s+/gu, "").trim());
+      return labels.some(label => /^(?:草稿已保存|草稿保存成功|保存草稿成功|已自动保存|自动保存成功|已保存到草稿箱|已保存至草稿箱)$/u.test(label));
+    }, { timeout });
+    await page.goto("https://mp.toutiao.com/profile_v4/manage/draft", {
+      waitUntil: "domcontentloaded", timeout: 15000,
+    });
+    await page.waitForFunction(expected => String(document.body?.innerText || "").includes(expected),
+      { timeout: 15000 }, title);
+    return true;
+  } catch { return false; }
 }
 
 export function renderUploadedArticle(data, uploadedUrls) {
@@ -80,7 +131,25 @@ export async function fillArticleMetadata(page, data) {
   const summary = String(data.data?.summary || "").trim();
   if (summary) {
     const selector = "textarea[placeholder*='摘要'],input[placeholder*='摘要']";
-    const field = await page.$(selector);
+    let field = await page.$(selector);
+    if (!field && data.pt === "头条") {
+      // The Toutiao editor can hide metadata below "发文设置".
+      const opened = await page.evaluate(() => {
+        const visible = element => {
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const matches = element => String(element.textContent || "").replace(/\s+/gu, "") === "发文设置";
+        const control = [...document.querySelectorAll("button,[role='button'],a")].find(element => visible(element) && matches(element))
+          || [...document.querySelectorAll("span,div")].find(element => visible(element) && matches(element));
+        if (!control) return false;
+        control.click();
+        return true;
+      });
+      if (opened) {
+        field = await page.waitForSelector(selector, { visible: true, timeout: 3000 }).catch(() => null);
+      }
+    }
     if (!field) throw new Error("平台文章摘要字段不可用，请清空摘要后重试");
     await page.click(selector, { clickCount: 3 });
     await page.keyboard.press("Backspace");

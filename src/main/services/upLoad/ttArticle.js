@@ -2,17 +2,19 @@
 
 import {
   captureArticleNotices, clickArticleAction, confirmPlatformOutcome, currentUrl, failArticle,
-  fillArticleMetadata, fillArticleTitle, findArticleEditor, finishArticle, pasteArticleHtml, renderUploadedArticle,
+  confirmToutiaoDraftAutosave, fillArticleMetadata, fillArticleTitle, findArticleEditor, finishArticle,
+  pasteArticleHtml, renderUploadedArticle,
 } from "./articleWebTools.js";
 import { selectToutiaoCover, uploadToutiaoImage } from "./articleImageUpload.js";
 
-/** Experimental article adapter; the capability flag stays off until real-account validation. */
+/** Toutiao article adapter; real-account draft/publish acceptance remains separate. */
 export default async function publishToutiaoArticle(page, data, window, event) {
   const mode = data.publishToDraft === true ? "draft" : "publish";
   let clicked = false;
   try {
     const editor = await findArticleEditor(page);
     await fillArticleTitle(page, data.data.title);
+    if (mode === "draft") clicked = true; // Title edits can already trigger autosave.
     const uploaded = {};
     for (const asset of data.data.images || []) {
       uploaded[asset.id] = await uploadToutiaoImage(page, editor, asset);
@@ -30,18 +32,21 @@ export default async function publishToutiaoArticle(page, data, window, event) {
     if (coverUrl) await selectToutiaoCover(page, coverUrl);
 
     const before = currentUrl(page);
+    if (mode === "draft") {
+      // The current Toutiao editor autosaves to Drafts; it has no explicit
+      // "保存草稿" action. Never report success before its save indicator confirms.
+      const confirmed = await confirmToutiaoDraftAutosave(page, data.data.title);
+      await finishArticle(page, data, window, event, mode, before, confirmed);
+      return;
+    }
     const notices = await captureArticleNotices(page);
     clicked = true;
-    await clickArticleAction(page, mode === "draft"
-      ? ["保存草稿", "存草稿", "保存为草稿"]
-      : ["预览并发布", "发布"]);
-    if (mode === "publish") {
-      // Some revisions show a second preview dialog. Only click in that dialog.
-      await page.waitForTimeout(600);
-      const hasDialog = await page.evaluate(() => [...document.querySelectorAll("[role='dialog'],.byte-modal")]
-        .some(item => item.getBoundingClientRect().width > 0 && /确认发布|预览并发布/u.test(item.textContent || "")));
-      if (hasDialog) await clickArticleAction(page, ["确认发布", "发布"], "[role='dialog'],.byte-modal");
-    }
+    await clickArticleAction(page, ["预览并发布", "发布"]);
+    // Some revisions show a second preview dialog. Only click in that dialog.
+    await page.waitForTimeout(600);
+    const hasDialog = await page.evaluate(() => [...document.querySelectorAll("[role='dialog'],.byte-modal")]
+      .some(item => item.getBoundingClientRect().width > 0 && /确认发布|预览并发布/u.test(item.textContent || "")));
+    if (hasDialog) await clickArticleAction(page, ["确认发布", "发布"], "[role='dialog'],.byte-modal");
     const confirmed = await confirmPlatformOutcome(page, mode, before, notices);
     await finishArticle(page, data, window, event, mode, before, confirmed);
   } catch (error) {

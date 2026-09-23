@@ -44,6 +44,111 @@ try {
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt("https://mp.toutiao.com/profile_v4/graphic/success"), "publish", before), true);
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt("https://mp.toutiao.com/profile_v4/graphic/edit?article_id=1"), "publish", before), false);
 
+      const saveIndicator = (label, listed) => {
+        let atDashboard = false;
+        return {
+          goto: async url => {
+            assert.strictEqual(url, "https://mp.toutiao.com/profile_v4/manage/draft");
+            atDashboard = true;
+          },
+          waitForFunction: async (callback, _options, ...args) => {
+            global.document = atDashboard
+              ? { body: { innerText: listed ? "测试标题" : "暂无草稿" } }
+              : { querySelectorAll: () => [{ textContent: label }] };
+            if (!callback(...args)) throw new Error("not saved");
+          },
+        };
+      };
+      assert.strictEqual(await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿保存中...", false), "测试标题"), false);
+      assert.strictEqual(await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿已保存", false), "测试标题"), false);
+      assert.strictEqual(await tools.confirmToutiaoDraftAutosave(saveIndicator("草稿已保存", true), "测试标题"), true);
+
+      let settingsOpened = false;
+      let summaryTyped = "";
+      await tools.fillArticleMetadata({
+        $: async () => null,
+        evaluate: async callback => {
+          global.document = { querySelectorAll: selector => selector.includes("button") ? [{
+            textContent: "发文设置",
+            getBoundingClientRect: () => ({ width: 20, height: 20 }),
+            click: () => { settingsOpened = true; },
+          }] : [] };
+          return callback();
+        },
+        waitForSelector: async () => settingsOpened ? {} : null,
+        click: async () => {},
+        keyboard: { press: async () => {} },
+        type: async (_selector, value) => { summaryTyped = value; },
+        $eval: async () => summaryTyped,
+      }, { pt: "头条", data: { summary: "测试摘要" } });
+      assert.strictEqual(settingsOpened, true);
+      assert.strictEqual(summaryTyped, "测试摘要");
+
+      const originalDataTransfer = global.DataTransfer;
+      const originalClipboardEvent = global.ClipboardEvent;
+      global.DataTransfer = class {
+        values = {};
+        setData(type, value) { this.values[type] = value; }
+        getData(type) { return this.values[type]; }
+      };
+      global.ClipboardEvent = class {
+        constructor(type, options) { this.type = type; this.clipboardData = options.clipboardData; }
+      };
+      const editorPage = ({ paste = false, command = false } = {}) => {
+        const state = { html: "<p></p>", text: "", inserted: 0 };
+        const element = {
+          get innerHTML() { return state.html; },
+          get textContent() { return state.text; },
+          focus() {},
+          querySelectorAll: () => [],
+          dispatchEvent(event) {
+            if (paste) {
+              state.html = event.clipboardData.getData("text/html");
+              state.text = event.clipboardData.getData("text/plain");
+            }
+          },
+        };
+        const page = {
+          click: async () => {},
+          evaluate: async (callback, ...args) => {
+            global.document = {
+              querySelector: () => element,
+              execCommand: (_action, _show, html) => {
+                if (command) { state.html = html; state.text = html.replace(/<[^>]+>/gu, ""); }
+              },
+            };
+            return callback(...args);
+          },
+          waitForFunction: async (callback, _options, ...args) => {
+            if (!callback(...args)) throw new Error("not written");
+          },
+          keyboard: { insertText: async value => {
+            state.inserted++;
+            state.html = value;
+            state.text = value;
+          } },
+        };
+        return { page, state };
+      };
+      try {
+        const synthetic = editorPage({ paste: true });
+        await tools.pasteArticleHtml(synthetic.page, "#editor", "<p>Hello</p>", "Hello");
+        assert.strictEqual(synthetic.state.inserted, 0);
+        assert.strictEqual(synthetic.state.html, "<p>Hello</p>");
+        const htmlCommand = editorPage({ command: true });
+        await tools.pasteArticleHtml(htmlCommand.page, "#editor", "<h1>Title</h1>", "# Title");
+        assert.strictEqual(htmlCommand.state.inserted, 0);
+        const textFallback = editorPage();
+        await tools.pasteArticleHtml(textFallback.page, "#editor", "<p>Plain</p>", "Plain");
+        assert.strictEqual(textFallback.state.inserted, 1);
+        const formattedFailure = editorPage();
+        await assert.rejects(tools.pasteArticleHtml(formattedFailure.page, "#editor", "<h1>Title</h1>", "# Title"), /文章正文未写入/u);
+        assert.strictEqual(formattedFailure.state.inserted, 0);
+      } finally {
+        global.DataTransfer = originalDataTransfer;
+        global.ClipboardEvent = originalClipboardEvent;
+      }
+
       const calls = [];
       await tools.finishArticle(pageAt(before), { pt: "头条", closeWindowAfterPublish: false }, null,
         { reply: (_channel, payload) => calls.push(payload) }, "publish", before, false);
