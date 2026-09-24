@@ -4,10 +4,12 @@ import fs from "fs";
 import path from "path";
 import { createHash, randomUUID } from "crypto";
 import { PublisherProtocolError } from "./protocol.js";
+import { ALL_PLATFORMS } from "./capabilities.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const MAX_MANIFEST = 4 * 1024 * 1024;
 const MAX_ASSET = 20 * 1024 * 1024;
+const VARIANT_FIELDS = new Set(["title", "body", "summary", "tags", "coverAssetId", "assetOrder"]);
 
 function invalid(message) {
   throw new PublisherProtocolError("invalid-content", message);
@@ -26,6 +28,41 @@ function sniff(buffer) {
   return "";
 }
 
+function validatePlatformVariants(manifest, assetIds) {
+  const variants = manifest.platformVariants;
+  if (variants === undefined) return;
+  if (!variants || typeof variants !== "object" || Array.isArray(variants)) invalid("平台版本无效");
+  for (const [platform, variant] of Object.entries(variants)) {
+    if (!ALL_PLATFORMS.includes(platform) || !variant || typeof variant !== "object" || Array.isArray(variant)
+      || Object.keys(variant).some(field => !VARIANT_FIELDS.has(field))) invalid("平台版本无效");
+    if (Object.hasOwn(variant, "title") && (typeof variant.title !== "string" || variant.title.length > 120)) invalid("平台标题无效");
+    if (Object.hasOwn(variant, "body") && (typeof variant.body !== "string" || Buffer.byteLength(variant.body, "utf8") > 2 * 1024 * 1024)) invalid("平台正文无效");
+    if (Object.hasOwn(variant, "summary") && (typeof variant.summary !== "string" || variant.summary.length > 2000)) invalid("平台摘要无效");
+    if (Object.hasOwn(variant, "tags") && (!Array.isArray(variant.tags) || variant.tags.length > 8
+      || variant.tags.some(tag => typeof tag !== "string" || tag.length > 100))) invalid("平台标签无效");
+    if (Object.hasOwn(variant, "coverAssetId") && variant.coverAssetId !== null
+      && (typeof variant.coverAssetId !== "string" || !assetIds.has(variant.coverAssetId))) invalid("平台封面素材无效");
+    if (Object.hasOwn(variant, "assetOrder") && (!Array.isArray(variant.assetOrder)
+      || variant.assetOrder.length > assetIds.size || new Set(variant.assetOrder).size !== variant.assetOrder.length
+      || variant.assetOrder.some(id => typeof id !== "string" || !assetIds.has(id)))) invalid("平台图片顺序无效");
+  }
+}
+
+/** The immutable snapshot keeps every version; each target sees only its effective fields. */
+export function projectContentForPlatform(manifest, platform) {
+  const variant = manifest.platformVariants?.[platform] || {};
+  const projected = { ...manifest };
+  delete projected.platformVariants;
+  for (const field of ["title", "body", "summary", "tags", "coverAssetId"]) {
+    if (Object.hasOwn(variant, field)) projected[field] = variant[field];
+  }
+  if (Object.hasOwn(variant, "assetOrder")) {
+    const assets = new Map(manifest.assets.map(asset => [asset.id, asset]));
+    projected.assets = variant.assetOrder.map(id => assets.get(id));
+  }
+  return projected;
+}
+
 export function readContentPackage(directory, expectedId, revision, expectedType, strictIdFolder = true) {
   if (!path.isAbsolute(directory) || !UUID.test(expectedId)) invalid("内容包路径无效");
   const root = fs.realpathSync(directory);
@@ -34,12 +71,10 @@ export function readContentPackage(directory, expectedId, revision, expectedType
   if (fileNoSymlink(manifestPath).size > MAX_MANIFEST) invalid("内容包过大");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   if (!manifest || manifest.id !== expectedId || manifest.revision !== revision || manifest.contentType !== expectedType) invalid("内容包修订不匹配");
-  if (!["article", "image-note"].includes(expectedType) || !String(manifest.title || "").trim() || String(manifest.title).length > 120) invalid("内容标题无效");
+  if (!["article", "image-note"].includes(expectedType) || typeof manifest.title !== "string" || manifest.title.length > 120) invalid("内容标题无效");
   if (typeof manifest.body !== "string" || Buffer.byteLength(manifest.body, "utf8") > 2 * 1024 * 1024) invalid("正文无效");
-  if (expectedType === "article" && !manifest.body.trim()) invalid("文章正文不能为空");
   if (!Array.isArray(manifest.tags) || manifest.tags.length > 8 || manifest.tags.some(tag => typeof tag !== "string" || tag.length > 100)) invalid("标签无效");
   if (!Array.isArray(manifest.assets) || manifest.assets.length > 20) invalid("素材数量无效");
-  if (expectedType === "image-note" && !manifest.assets.length) invalid("图文至少需要一张图片");
   const assetsRoot = path.join(root, "assets");
   if (fs.lstatSync(assetsRoot).isSymbolicLink() || !fs.statSync(assetsRoot).isDirectory()) invalid("素材目录无效");
   const ids = new Set();
@@ -57,6 +92,7 @@ export function readContentPackage(directory, expectedId, revision, expectedType
     assetHashes[asset.id] = digest;
   }
   if (manifest.coverAssetId && !ids.has(manifest.coverAssetId)) invalid("封面素材无效");
+  validatePlatformVariants(manifest, ids);
   return { manifest, root, assetHashes };
 }
 

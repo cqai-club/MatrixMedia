@@ -9,9 +9,9 @@ import { PublisherProtocolError } from "./protocol.js";
 import { PublisherStore, publicSubmission } from "./store.js";
 import { PublisherAccounts } from "./accounts.js";
 import { accepts, platformCapabilities } from "./capabilities.js";
-import { captureContentPackage, readContentPackage, removeSubmissionSnapshot } from "./content-package.js";
+import { captureContentPackage, projectContentForPlatform, readContentPackage, removeSubmissionSnapshot } from "./content-package.js";
 import { runBilibiliArticle, runJuejinArticle, runXhsImageNote, runToutiaoArticle, runBaijiahaoArticle, runWechatOfficialArticle } from "./article.js";
-import { articleImageIds } from "./article-content.js";
+import { validateTargetContent } from "./target-content.js";
 import { publisherUserAgent } from "./userAgent.js";
 
 function text(value, label, max) {
@@ -117,50 +117,8 @@ export class PublisherWorkerService {
     } else {
       if (!Number.isSafeInteger(params.revision) || params.revision < 1) throw new PublisherProtocolError("invalid-content", "草稿修订号无效");
       source = readContentPackage(params.contentDirectory, params.contentId, params.revision, contentType);
-      if (contentType === "article" && source.manifest.assets.length > 0 && !source.manifest.coverAssetId) {
-        throw new PublisherProtocolError("invalid-content", "文章素材必须选择封面");
-      }
-      if (contentType === "article" && selected.some(account => account.platform === "tt" || account.platform === "bjh" || account.platform === "wxmp")) {
-        articleImageIds(source.manifest);
-      }
-      if (contentType === "article" && selected.some(account => account.platform === "wxmp")) {
-        this.accounts.wechat.validate(source.manifest);
-      }
-      if (contentType === "article" && selected.some(account => account.platform === "juejin" || account.platform === "blbl")
-        && source.manifest.body.includes("ebao-asset://")) {
-        throw new PublisherProtocolError("unsupported-content", "掘金和B站专栏暂不支持正文插图，请分开提交");
-      }
-      if (contentType === "article" && String(source.manifest.summary || "").trim()
-        && selected.some(account => account.platform === "tt")) {
-        throw new PublisherProtocolError("unsupported-content", "头条当前文章编辑页没有可写的独立摘要，请清空摘要后再提交");
-      }
       for (const account of selected) {
-        const required = capabilities.find(item => item.platform === account.platform)?.requiredFields[contentType] || [];
-        const limit = capabilities.find(item => item.platform === account.platform)?.maxTitleLength[contentType];
-        if (limit && source.manifest.title.length > limit) {
-          throw new PublisherProtocolError("invalid-content", `${account.displayName}标题不能超过${limit}字`);
-        }
-        const assetLimit = capabilities.find(item => item.platform === account.platform)?.maxAssets[contentType];
-        if (assetLimit && source.manifest.assets.length > assetLimit) {
-          throw new PublisherProtocolError("invalid-content", `${account.displayName}素材不能超过${assetLimit}个`);
-        }
-        for (const field of required) {
-          if (!String(source.manifest.platformFields?.[account.platform]?.[field] || "").trim()) {
-            throw new PublisherProtocolError("invalid-content", `${account.displayName}缺少${field}`);
-          }
-        }
-      }
-      if (contentType === "article" && selected.some(account => account.platform === "juejin")
-        && source.manifest.assets.some(asset => asset.id !== source.manifest.coverAssetId)) {
-        throw new PublisherProtocolError("unsupported-content", "掘金文章正文图片暂未通过验收，请先只保留封面");
-      }
-      if (contentType === "article" && selected.some(account => account.platform === "blbl")
-        && source.manifest.assets.some(asset => asset.id !== source.manifest.coverAssetId)) {
-        throw new PublisherProtocolError("unsupported-content", "B站专栏正文图片暂未通过验收，请先只保留封面");
-      }
-      if (contentType === "image-note" && selected.some(account => account.platform === "xhs")
-        && !["none", "ai_generated", "fiction", "marketing"].includes(source.manifest.creativeStatement)) {
-        throw new PublisherProtocolError("unsupported-content", "小红书暂不支持该内容声明");
+        validateTargetContent(source.manifest, account, contentType, capabilities, this.accounts.wechat);
       }
       acceptedManifest = JSON.stringify(source.manifest);
     }
@@ -187,7 +145,9 @@ export class PublisherWorkerService {
         const submission = this.store.createSubmission({
           id, contentType, revision: source?.manifest.revision, contentId: source ? params.contentId : text(params.workId, "作品 ID", 200),
           ...(source ? { snapshotDirectory } : { workId: text(params.workId, "作品 ID", 200), file }),
-          title: source ? source.manifest.title : text(params.title, "标题", 120),
+          title: source
+            ? source.manifest.title.trim() || projectContentForPlatform(source.manifest, selected[0].platform).title
+            : text(params.title, "标题", 120),
           description: source ? source.manifest.body : String(params.description || "").trim().slice(0, 2000),
           summary: source ? source.manifest.summary : "",
           shortTitle: String(params.shortTitle || "").trim().slice(0, 32),
@@ -245,19 +205,20 @@ export class PublisherWorkerService {
           } else {
             const content = readContentPackage(submission.snapshotDirectory, submission.contentId, submission.revision, submission.contentType, false);
             for (const account of accounts) {
+              const effective = projectContentForPlatform(content.manifest, account.platform);
               if (account.platform === "juejin" && submission.contentType === "article") {
-                results.push(await runJuejinArticle(account, submission, content.manifest));
+                results.push(await runJuejinArticle(account, submission, effective));
               } else if (account.platform === "blbl" && submission.contentType === "article") {
-                results.push(await runBilibiliArticle(account, submission, content.manifest));
+                results.push(await runBilibiliArticle(account, submission, effective));
               } else if (account.platform === "tt" && submission.contentType === "article") {
-                results.push(await runToutiaoArticle(account, submission, content.manifest));
+                results.push(await runToutiaoArticle(account, submission, effective));
               } else if (account.platform === "bjh" && submission.contentType === "article") {
-                results.push(await runBaijiahaoArticle(account, submission, content.manifest));
+                results.push(await runBaijiahaoArticle(account, submission, effective));
               } else if (account.platform === "wxmp" && submission.contentType === "article") {
-                results.push(await runWechatOfficialArticle(account, submission, content.manifest,
+                results.push(await runWechatOfficialArticle(account, submission, effective,
                   this.accounts.wechatCredentials(account.id), this.accounts.wechat));
               } else if (account.platform === "xhs" && submission.contentType === "image-note") {
-                results.push(await runXhsImageNote(account, submission, content.manifest));
+                results.push(await runXhsImageNote(account, submission, effective));
               } else {
                 results.push({ exitCode: 1, status: "unsupported", message: "平台适配器尚未开放" });
               }

@@ -3,7 +3,7 @@
 import fs from "fs";
 import path from "path";
 import { createHash } from "crypto";
-import { articleImageIds, renderArticleHtml } from "./article-content.js";
+import { articleImageIds, renderWechatArticleHtml } from "./article-content.js";
 import { PublisherProtocolError } from "./protocol.js";
 
 const API = "https://api.weixin.qq.com";
@@ -121,7 +121,7 @@ export class WechatOfficialClient {
     }
     const coverResult = await this.upload(credentials, "/cgi-bin/material/add_material?type=image", cover, submission.snapshotDirectory, token);
     const coverId = requiredResponse(coverResult, "media_id", "封面上传");
-    const html = renderArticleHtml({ ...manifest, body }, uploaded);
+    const html = renderWechatArticleHtml({ ...manifest, body }, uploaded);
     if (Buffer.byteLength(html, "utf8") >= IMAGE_LIMIT || html.length > 20_000) invalid("微信公众号文章正文超过接口限制");
     const article = {
       article_type: "news", title: manifest.title, author: "", digest: manifest.summary || "",

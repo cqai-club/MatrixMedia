@@ -36,6 +36,7 @@ const root = path.join(__dirname, "..");
   const capabilities = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/capabilities.js")));
   const packages = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/content-package.js")));
   const articles = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/article-content.js")));
+  const targets = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/target-content.js")));
   const routing = await import(pathToFileURL(path.join(root, "src/main/services/upLoad/taskRouting.js")));
   const { publisherUserAgent } = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/userAgent.js")));
   const configured = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/138.0.0.0";
@@ -50,6 +51,7 @@ const root = path.join(__dirname, "..");
   assert.deepStrictEqual(advertised.find(item => item.platform === "blbl").modes.article, ["publish", "draft"]);
   assert.deepStrictEqual(advertised.find(item => item.platform === "xhs").modes["image-note"], ["publish", "draft"]);
   assert.strictEqual(advertised.find(item => item.platform === "xhs").maxTitleLength["image-note"], 20);
+  assert.strictEqual(advertised.find(item => item.platform === "xhs").maxAssets["image-note"], 18);
   for (const platform of ["tt", "bjh"]) {
     const entry = advertised.find(item => item.platform === platform);
     assert.deepStrictEqual(entry.contentTypes, ["video", "article"]);
@@ -166,24 +168,110 @@ const root = path.join(__dirname, "..");
     const source = path.join(temporary, "contents", contentId);
     fs.mkdirSync(path.join(source, "assets"), { recursive: true });
     const assetId = "22222222-2222-4222-8222-222222222222";
+    const secondAssetId = "55555555-5555-4555-8555-555555555555";
     const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]);
     fs.writeFileSync(path.join(source, "assets", assetId), png);
+    fs.writeFileSync(path.join(source, "assets", secondAssetId), png);
     const manifest = {
       id: contentId, contentType: "article", revision: 3, title: "文章",
       body: "# 标题", summary: "", tags: [], creativeStatement: "none",
-      assets: [{ id: assetId, mime: "image/png", bytes: png.length }],
+      assets: [{ id: assetId, mime: "image/png", bytes: png.length }, { id: secondAssetId, mime: "image/png", bytes: png.length }],
       coverAssetId: assetId, platformFields: { juejin: { category: "前端" } },
+      platformVariants: {
+        wxmp: { title: "公众号标题", body: "## 微信正文", summary: "微信摘要", tags: ["微信"], coverAssetId: assetId, assetOrder: [secondAssetId, assetId] },
+        juejin: { assetOrder: [assetId] },
+        tt: { title: "头条？", summary: "" },
+      },
     };
     fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify(manifest));
     const managedBody = `正文\n\n![图](ebao-asset://${assetId})`;
     assert.deepStrictEqual(articles.articleImageIds({ ...manifest, body: managedBody }), [assetId]);
     assert.match(articles.renderArticleHtml({ ...manifest, body: managedBody }, { [assetId]: "https://example.com/image.png" }), /<img src="https:\/\/example.com\/image.png"/u);
+    const wechatHtml = articles.renderWechatArticleHtml({ ...manifest, body: `# 标题\n\n> 引言\n\n${managedBody}` }, { [assetId]: "https://example.com/image.png" });
+    assert.match(wechatHtml, /<section style="font-size:16px;line-height:1\.8;/u);
+    assert.match(wechatHtml, /<h1 style="font-size:24px;/u);
+    assert.match(wechatHtml, /<blockquote style="border-left:3px solid #2c78e4;/u);
+    assert.match(wechatHtml, /<img src="https:\/\/example.com\/image.png"[^>]+style="display:block;/u);
+    assert.deepStrictEqual(articles.articleImageIds({ ...manifest, body: `[![图](ebao-asset://${assetId})](https://example.com)` }), [assetId]);
+    assert.match(articles.renderWechatArticleHtml({ ...manifest, body: "<script>alert(1)</script>" }, {}), /&lt;script&gt;/u);
     assert.throws(() => articles.renderArticleHtml({ ...manifest, body: managedBody }, {}), /上传未完成/u);
     assert.throws(() => articles.articleImageIds({ ...manifest, body: "![外部](https://example.com/a.png)" }), /必须引用/u);
     assert.throws(() => articles.articleImageIds({ ...manifest, body: "![本地](../image.png)" }), /必须引用/u);
     assert.throws(() => articles.articleImageIds({ ...manifest, body: "<img src='file:///tmp/a'>" }), /原始 HTML/u);
     assert.throws(() => articles.articleImageIds({ ...manifest, body: "![错误](ebao-asset://33333333-3333-4333-8333-333333333333)" }), /必须引用/u);
     const checked = packages.readContentPackage(source, contentId, 3, "article");
+    const blankMaster = { ...manifest, title: "", body: "", platformVariants: {
+      wxmp: { title: "完整公众号标题", body: "## 完整公众号正文", coverAssetId: assetId },
+      juejin: { title: "完整掘金标题", body: "完整掘金正文", assetOrder: [assetId] },
+    } };
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify(blankMaster));
+    const blankMasterPackage = packages.readContentPackage(source, contentId, 3, "article");
+    assert.strictEqual(targets.validateTargetContent(blankMasterPackage.manifest,
+      { platform: "wxmp", displayName: "公众号" }, "article", advertised,
+      { validate: () => {} }).body, "## 完整公众号正文");
+    assert.strictEqual(targets.validateTargetContent(blankMasterPackage.manifest,
+      { platform: "juejin", displayName: "掘金" }, "article", advertised, null).title, "完整掘金标题");
+    for (const platform of ["wxmp", "juejin"]) {
+      assert.throws(() => targets.validateTargetContent({ ...blankMaster, platformVariants: {} },
+        { platform, displayName: platform }, "article", advertised, { validate: () => {} }), /标题不能为空/u);
+    }
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...blankMaster,
+      contentType: "image-note", assets: [], coverAssetId: undefined,
+      platformVariants: { xhs: { title: "图文标题" } },
+    }));
+    const emptyImageNote = packages.readContentPackage(source, contentId, 3, "image-note");
+    assert.throws(() => targets.validateTargetContent(emptyImageNote.manifest,
+      { platform: "xhs", displayName: "小红书" }, "image-note", advertised, null), /图文至少需要一张图片/u);
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify(manifest));
+    const wechatVersion = packages.projectContentForPlatform(checked.manifest, "wxmp");
+    assert.strictEqual(wechatVersion.title, "公众号标题");
+    assert.strictEqual(wechatVersion.body, "## 微信正文");
+    assert.deepStrictEqual(wechatVersion.tags, ["微信"]);
+    assert.deepStrictEqual(wechatVersion.assets.map(asset => asset.id), [secondAssetId, assetId]);
+    assert.strictEqual(Object.hasOwn(wechatVersion, "platformVariants"), false);
+    assert.strictEqual(packages.projectContentForPlatform(checked.manifest, "tt").summary, "");
+    assert.strictEqual(packages.projectContentForPlatform(checked.manifest, "bjh").title, "文章");
+    let wechatValidated = "";
+    const wechatTarget = targets.validateTargetContent(checked.manifest,
+      { platform: "wxmp", displayName: "公众号" }, "article", advertised,
+      { validate: content => { wechatValidated = content.title; } });
+    assert.strictEqual(wechatValidated, "公众号标题");
+    assert.strictEqual(wechatTarget.body, "## 微信正文");
+    assert.deepStrictEqual(wechatTarget.assets.map(asset => asset.id), [secondAssetId, assetId]);
+    const juejinTarget = targets.validateTargetContent(checked.manifest,
+      { platform: "juejin", displayName: "掘金" }, "article", advertised, null);
+    assert.deepStrictEqual(juejinTarget.assets.map(asset => asset.id), [assetId]);
+    assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: {} },
+      { platform: "juejin", displayName: "掘金" }, "article", advertised, null), /素材不能超过1个/u);
+    const toutiaoTarget = targets.validateTargetContent({ ...manifest, summary: "主稿摘要" },
+      { platform: "tt", displayName: "头条" }, "article", advertised, null);
+    assert.strictEqual(toutiaoTarget.summary, "");
+    assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: { tt: { summary: "独立摘要" } } },
+      { platform: "tt", displayName: "头条" }, "article", advertised, null), /清空头条版本的摘要/u);
+    assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: { wxmp: { title: "" } } },
+      { platform: "wxmp", displayName: "公众号" }, "article", advertised, { validate: () => {} }), /标题不能为空/u);
+    assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: { tt: { assetOrder: [secondAssetId] } } },
+      { platform: "tt", displayName: "头条" }, "article", advertised, null), /封面不在所选图片中/u);
+    assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: {
+      tt: { assetOrder: [assetId], body: `![排除素材](ebao-asset://${secondAssetId})` },
+    } }, { platform: "tt", displayName: "头条" }, "article", advertised, null), /必须引用当前草稿中已上传的素材/u);
+    const noImageTarget = targets.validateTargetContent({ ...manifest, platformVariants: { tt: { assetOrder: [], coverAssetId: null } } },
+      { platform: "tt", displayName: "头条" }, "article", advertised, null);
+    assert.deepStrictEqual(noImageTarget.assets, []);
+    assert.strictEqual(noImageTarget.coverAssetId, null);
+    assert.throws(() => targets.validateTargetContent({ ...manifest, contentType: "image-note", title: "图文",
+      platformVariants: { xhs: { assetOrder: [], coverAssetId: null } } },
+    { platform: "xhs", displayName: "小红书" }, "image-note", advertised, null), /图文至少需要一张图片/u);
+    assert.throws(() => targets.validateTargetContent({ ...manifest, contentType: "image-note", title: "图文", body: "正文", coverAssetId: null,
+      assets: Array.from({ length: 19 }, (_, index) => ({ id: String(index), mime: "image/png" })) },
+    { platform: "xhs", displayName: "小红书" }, "image-note", advertised, null), /素材不能超过18个/u);
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...manifest, platformVariants: { wxmp: { assetOrder: ["99999999-9999-4999-8999-999999999999"] } } }));
+    assert.throws(() => packages.readContentPackage(source, contentId, 3, "article"), /平台图片顺序无效/u);
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...manifest, platformVariants: { wxmp: { coverAssetId: "99999999-9999-4999-8999-999999999999" } } }));
+    assert.throws(() => packages.readContentPackage(source, contentId, 3, "article"), /平台封面素材无效/u);
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...manifest, platformVariants: { tt: { assetOrder: [], coverAssetId: null } } }));
+    assert.deepStrictEqual(packages.readContentPackage(source, contentId, 3, "article").manifest.platformVariants.tt.assetOrder, []);
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify(manifest));
     const snapshotId = "33333333-3333-4333-8333-333333333333";
     const snapshot = packages.captureContentPackage(checked, path.join(temporary, "snapshots"), snapshotId);
     fs.rmSync(source, { recursive: true });
