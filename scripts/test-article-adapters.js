@@ -108,10 +108,24 @@ try {
       };
       const saveResponse = (content, code, { title = "测试标题", pgcId = "", url = "https://mp.toutiao.com/mp/agw/article/publish?source=mp" } = {}) => ({
         url: () => url,
-        request: () => ({ method: () => "POST", postData: () => new URLSearchParams({
+        status: () => 200,
+        request: () => ({ url: () => url, method: () => "POST", postData: () => new URLSearchParams({
           title, content, ...(pgcId ? { pgc_id: pgcId } : {}),
         }).toString() }),
         json: async () => ({ code, message: "private response" }),
+      });
+      const saveRequest = ({
+        title = "测试标题", content = "", url = "https://mp.toutiao.com/mp/agw/article/publish?token=private",
+        failure = null,
+      } = {}) => ({
+        url: () => url,
+        method: () => "POST",
+        postData: () => new URLSearchParams({ title, content }).toString(),
+        failure: () => failure && { errorText: failure },
+      });
+      const responseFor = (request, { code = 0, status = 200, json = { code, message: "private response" } } = {}) => ({
+        url: () => request.url(), request: () => request,
+        status: () => status, json: async () => json,
       });
       const titleSavePage = (status, title = "测试标题") => ({
         waitForFunction: async (callback, _options, ...args) => {
@@ -153,6 +167,88 @@ try {
       await new Promise(resolve => setImmediate(resolve));
       assert.match((await initialFailure.waitForInitialTitleSave(1)).reason, /初始草稿保存接口拒绝（错误码 7050）/u);
       initialFailure.stop();
+      const stringCodeEvents = new EventEmitter();
+      const stringCodeSave = tools.observeToutiaoDraftSave(stringCodeEvents);
+      stringCodeSave.expect("测试标题", "完整测试正文");
+      stringCodeEvents.emit("response", saveResponse("", "0"));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual((await stringCodeSave.waitForInitialTitleSave(1)).confirmed, true);
+      stringCodeSave.stop();
+      const noRequestEvents = new EventEmitter();
+      const noRequestSave = tools.observeToutiaoDraftSave(noRequestEvents);
+      noRequestSave.expect("测试标题", "完整测试正文");
+      noRequestEvents.emit("request", saveRequest({ title: "其他标题" }));
+      assert.match((await noRequestSave.waitForInitialTitleSave(1)).reason, /未观察到.*初始草稿保存请求/u);
+      noRequestSave.stop();
+
+      const pendingEvents = new EventEmitter();
+      const pendingSave = tools.observeToutiaoDraftSave(pendingEvents);
+      pendingSave.expect("测试标题", "完整测试正文");
+      const pendingRequest = saveRequest();
+      pendingEvents.emit("request", pendingRequest);
+      const pendingReason = (await pendingSave.waitForInitialTitleSave(1)).reason;
+      assert.match(pendingReason, /初始草稿保存请求.*(?:未返回|未收到响应|超时)/u);
+      assert.doesNotMatch(pendingReason, /private|测试标题|完整测试正文/u);
+      pendingSave.stop();
+
+      const networkFailureEvents = new EventEmitter();
+      const networkFailureSave = tools.observeToutiaoDraftSave(networkFailureEvents);
+      networkFailureSave.expect("测试标题", "完整测试正文");
+      const failedRequest = saveRequest({ failure: "net::ERR_CONNECTION_RESET" });
+      networkFailureEvents.emit("request", failedRequest);
+      networkFailureEvents.emit("requestfailed", failedRequest);
+      assert.match((await networkFailureSave.waitForInitialTitleSave(1)).reason, /初始草稿保存.*(?:失败|网络错误)/u);
+      networkFailureSave.stop();
+
+      const httpFailureEvents = new EventEmitter();
+      const httpFailureSave = tools.observeToutiaoDraftSave(httpFailureEvents);
+      httpFailureSave.expect("测试标题", "完整测试正文");
+      const httpRequest = saveRequest();
+      httpFailureEvents.emit("request", httpRequest);
+      httpFailureEvents.emit("response", responseFor(httpRequest, { status: 503 }));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.match((await httpFailureSave.waitForInitialTitleSave(1)).reason, /(?:HTTP|状态码) 503/u);
+      httpFailureSave.stop();
+
+      const changedPathEvents = new EventEmitter();
+      const changedPathSave = tools.observeToutiaoDraftSave(changedPathEvents);
+      changedPathSave.expect("测试标题", "完整测试正文");
+      const changedPathRequest = saveRequest({ url: "https://mp.toutiao.com/mp/agw/article/save?token=private" });
+      changedPathEvents.emit("request", changedPathRequest);
+      changedPathEvents.emit("response", responseFor(changedPathRequest));
+      await new Promise(resolve => setImmediate(resolve));
+      const changedPathReason = (await changedPathSave.waitForInitialTitleSave(1)).reason;
+      assert.match(changedPathReason, /(?:保存接口路径变化|未识别保存请求)/u);
+      assert.doesNotMatch(changedPathReason, /token=private|测试标题/u);
+      changedPathSave.stop();
+
+      const invalidResponseEvents = new EventEmitter();
+      const invalidResponseSave = tools.observeToutiaoDraftSave(invalidResponseEvents);
+      invalidResponseSave.expect("测试标题", "完整测试正文");
+      const invalidResponseRequest = saveRequest();
+      invalidResponseEvents.emit("request", invalidResponseRequest);
+      invalidResponseEvents.emit("response", responseFor(invalidResponseRequest, { json: { status: "success" } }));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.match((await invalidResponseSave.waitForInitialTitleSave(1)).reason, /响应格式未识别/u);
+      invalidResponseSave.stop();
+
+      const unreadableResponseEvents = new EventEmitter();
+      const unreadableResponseSave = tools.observeToutiaoDraftSave(unreadableResponseEvents);
+      unreadableResponseSave.expect("测试标题", "完整测试正文");
+      const unreadableResponseRequest = saveRequest();
+      unreadableResponseEvents.emit("request", unreadableResponseRequest);
+      unreadableResponseEvents.emit("response", {
+        ...responseFor(unreadableResponseRequest),
+        json: async () => { throw new Error("private response payload"); },
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      const unreadableReason = (await unreadableResponseSave.waitForInitialTitleSave(1)).reason;
+      assert.match(unreadableReason, /响应格式未识别/u);
+      assert.doesNotMatch(unreadableReason, /private response payload/u);
+      unreadableResponseSave.stop();
+      for (const events of [noRequestEvents, pendingEvents, networkFailureEvents, httpFailureEvents, changedPathEvents, invalidResponseEvents, unreadableResponseEvents]) {
+        for (const name of ["request", "requestfailed", "response"]) assert.strictEqual(events.listenerCount(name), 0);
+      }
       const failedResponses = new EventEmitter();
       const failedSave = tools.observeToutiaoDraftSave(failedResponses);
       failedSave.expect("测试标题", "完整测试正文");

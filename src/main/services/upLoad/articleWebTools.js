@@ -145,31 +145,85 @@ function emptyToutiaoContent(content) {
 export function observeToutiaoDraftSave(page) {
   let expectedTitle = "";
   let bodyProbe = "";
-  const initial = { requests: 0, lastCode: undefined, saved: false };
-  const full = { requests: 0, lastCode: undefined, saved: false, missingDraftId: false };
+  const initial = { requests: new Set(), responses: 0, failures: 0, lastCode: undefined,
+    httpStatus: undefined, invalidResponse: false, saved: false };
+  const full = { requests: new Set(), responses: 0, failures: 0, lastCode: undefined,
+    httpStatus: undefined, invalidResponse: false, saved: false, missingDraftId: false };
+  let changedPath = false;
+  let changedPayload = false;
+  const inspect = request => {
+    const url = new URL(request.url());
+    if (url.origin !== "https://mp.toutiao.com" || request.method() !== "POST") return null;
+    const path = url.pathname;
+    if (path !== "/mp/agw/article/publish" && !/(?:article|draft)/iu.test(path)) return null;
+    const raw = request.postData() || "";
+    let fields = new URLSearchParams(raw);
+    if (raw.trimStart().startsWith("{")) {
+      const payload = JSON.parse(raw);
+      fields = { get: key => payload?.[key] };
+    }
+    if (!expectedTitle || String(fields.get("title") || "").trim() !== expectedTitle) {
+      if (path === "/mp/agw/article/publish" && expectedTitle && !fields.get("title")) changedPayload = true;
+      return null;
+    }
+    const content = String(fields.get("content") || "");
+    const titleOnly = emptyToutiaoContent(content);
+    const fullBody = Boolean(bodyProbe && content.includes(bodyProbe));
+    if (!titleOnly && !fullBody) return null;
+    if (path !== "/mp/agw/article/publish") {
+      changedPath = true;
+      return null;
+    }
+    return { stage: titleOnly ? initial : full, fields, fullBody };
+  };
+  const onRequest = request => {
+    try {
+      const match = inspect(request);
+      if (match) match.stage.requests.add(request);
+    } catch { /* The site's request format may change; do not expose its body. */ }
+  };
+  const onRequestFailed = request => {
+    try {
+      const match = inspect(request);
+      if (!match) return;
+      match.stage.requests.add(request);
+      match.stage.failures++;
+    } catch { /* A failed navigation can dispose its request. */ }
+  };
   const onResponse = async response => {
     try {
-      const url = new URL(response.url());
-      if (url.origin !== "https://mp.toutiao.com" || url.pathname !== "/mp/agw/article/publish"
-        || response.request().method() !== "POST") return;
-      const fields = new URLSearchParams(response.request().postData() || "");
-      if (!expectedTitle || fields.get("title")?.trim() !== expectedTitle) return;
-      const content = fields.get("content") || "";
-      const titleOnly = emptyToutiaoContent(content);
-      const fullBody = Boolean(bodyProbe && content.includes(bodyProbe));
-      if (!titleOnly && !fullBody) return;
-      const stage = titleOnly ? initial : full;
-      stage.requests++;
-      const result = await response.json();
-      if (Number.isSafeInteger(result.code)) {
-        stage.lastCode = result.code;
-        if (fullBody && !fields.get("pgc_id")) full.missingDraftId = true;
-        if (result.code === 0 && (titleOnly || (initial.saved && fields.get("pgc_id")))) {
-          stage.saved = true;
-        }
+      const request = response.request();
+      const match = inspect(request);
+      if (!match) return;
+      const { stage, fields, fullBody } = match;
+      stage.requests.add(request);
+      stage.responses++;
+      const httpStatus = response.status?.();
+      if (Number.isSafeInteger(httpStatus) && httpStatus >= 400) {
+        stage.httpStatus = httpStatus;
+        return;
+      }
+      let result;
+      try { result = await response.json(); }
+      catch {
+        stage.invalidResponse = true;
+        return;
+      }
+      const code = typeof result?.code === "string" && /^\d+$/u.test(result.code)
+        ? Number(result.code) : result?.code;
+      if (!Number.isSafeInteger(code)) {
+        stage.invalidResponse = true;
+        return;
+      }
+      stage.lastCode = code;
+      if (fullBody && !fields.get("pgc_id")) full.missingDraftId = true;
+      if (code === 0 && (!fullBody || (initial.saved && fields.get("pgc_id")))) {
+        stage.saved = true;
       }
     } catch { /* Navigation can dispose a response before its body is available. */ }
   };
+  page.on("request", onRequest);
+  page.on("requestfailed", onRequestFailed);
   page.on("response", onResponse);
   return {
     expect(title, body) {
@@ -182,9 +236,16 @@ export function observeToutiaoDraftSave(page) {
       const deadline = Date.now() + timeout;
       while (!initial.saved && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
       if (initial.saved) return { confirmed: true };
-      return { confirmed: false, reason: initial.lastCode !== undefined
+      return { confirmed: false, reason: initial.lastCode !== undefined && initial.lastCode !== 0
         ? `头条初始草稿保存接口拒绝（错误码 ${initial.lastCode}）`
-        : initial.requests > 0 ? "头条初始草稿保存响应未确认" : "未观察到头条仅标题的初始草稿保存请求" };
+        : initial.httpStatus !== undefined ? `头条初始草稿保存接口返回 HTTP ${initial.httpStatus}`
+          : initial.invalidResponse ? "头条初始草稿保存响应格式未识别"
+            : initial.failures > 0 ? "头条初始草稿保存网络请求失败"
+              : initial.responses > 0 ? "头条初始草稿保存响应未确认"
+                : initial.requests.size > 0 ? "头条初始草稿保存请求仍未返回"
+                  : changedPath ? "头条保存接口路径变化，未识别保存请求"
+                    : changedPayload ? "头条初始草稿保存请求体格式未识别"
+                      : "未观察到头条仅标题的初始草稿保存请求" };
     },
     async waitForFullBodySave(timeout = 30000) {
       const deadline = Date.now() + timeout;
@@ -192,10 +253,21 @@ export function observeToutiaoDraftSave(page) {
       if (full.saved) return { confirmed: true };
       return { confirmed: false, reason: full.lastCode !== undefined && full.lastCode !== 0
         ? `头条完整正文草稿保存接口拒绝（错误码 ${full.lastCode}）`
-        : full.missingDraftId ? "头条完整正文草稿保存请求未携带草稿标识"
-          : full.requests > 0 ? "头条完整正文草稿保存响应未确认" : "未观察到头条完整正文的草稿保存请求" };
+        : full.httpStatus !== undefined ? `头条完整正文草稿保存接口返回 HTTP ${full.httpStatus}`
+          : full.invalidResponse ? "头条完整正文草稿保存响应格式未识别"
+            : full.failures > 0 ? "头条完整正文草稿保存网络请求失败"
+              : full.missingDraftId ? "头条完整正文草稿保存请求未携带草稿标识"
+                : full.responses > 0 ? "头条完整正文草稿保存响应未确认"
+                  : full.requests.size > 0 ? "头条完整正文草稿保存请求仍未返回"
+                    : "未观察到头条完整正文的草稿保存请求" };
     },
-    stop: () => page.off("response", onResponse),
+    stop: () => {
+      page.off("request", onRequest);
+      page.off("requestfailed", onRequestFailed);
+      page.off("response", onResponse);
+      initial.requests.clear();
+      full.requests.clear();
+    },
   };
 }
 
