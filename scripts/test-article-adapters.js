@@ -22,6 +22,22 @@ try {
       outfile: path.join(bundleDir, `${name}.cjs`), external: ["electron"],
     });
   }
+  buildSync({
+    entryPoints: [path.join(root, "src/main/services/upLoad/blblArticle.js")],
+    bundle: true, platform: "node", format: "cjs",
+    outfile: path.join(bundleDir, "blblArticle-test.cjs"), external: ["electron"],
+  });
+  const { markdownToArticleHtml } = require(path.join(bundleDir, "blblArticle-test.cjs"));
+  const formatted = markdownToArticleHtml("# 标题\n\n**重点**与[链接](https://example.com/a?x=1&y=2)\n\n- 第一项\n- 第二项\n\n> 引用");
+  assert.match(formatted, /<h1>标题<\/h1>/u);
+  assert.match(formatted, /<strong>重点<\/strong>/u);
+  assert.match(formatted, /<a href="https:\/\/example\.com\/a\?x=1&amp;y=2">链接<\/a>/u);
+  assert.match(formatted, /<ul>[\s\S]*<li>第一项<\/li>[\s\S]*<li>第二项<\/li>[\s\S]*<\/ul>/u);
+  assert.match(formatted, /<blockquote>[\s\S]*引用[\s\S]*<\/blockquote>/u);
+  assert.doesNotMatch(formatted, /\*\*重点\*\*|\[链接\]|^- 第一项/mu);
+  assert.match(markdownToArticleHtml("<script>alert(1)</script>"), /&lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
+  assert.doesNotMatch(markdownToArticleHtml("[危险](javascript:alert(1))"), /href=/u);
+  assert.throws(() => markdownToArticleHtml("![正文图](https://example.com/image.png)"), /暂不支持正文插图/u);
   const webExports = [
     "captureArticleNotices", "clickArticleAction", "confirmPlatformOutcome", "currentUrl", "failArticle",
     "confirmToutiaoBodyAccepted", "confirmToutiaoDraftAutosave", "confirmToutiaoInitialDraftAutosave",

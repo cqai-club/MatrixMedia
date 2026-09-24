@@ -52,6 +52,8 @@ const root = path.join(__dirname, "..");
   assert.deepStrictEqual(advertised.find(item => item.platform === "xhs").modes["image-note"], ["publish", "draft"]);
   assert.strictEqual(advertised.find(item => item.platform === "xhs").maxTitleLength["image-note"], 20);
   assert.strictEqual(advertised.find(item => item.platform === "xhs").maxAssets["image-note"], 18);
+  assert.strictEqual(advertised.find(item => item.platform === "wxmp").articleThemeVersion, 1);
+  assert.strictEqual(Object.hasOwn(advertised.find(item => item.platform === "juejin"), "articleThemeVersion"), false);
   for (const platform of ["tt", "bjh"]) {
     const entry = advertised.find(item => item.platform === platform);
     assert.deepStrictEqual(entry.contentTypes, ["video", "article"]);
@@ -192,6 +194,25 @@ const root = path.join(__dirname, "..");
     assert.match(wechatHtml, /<h1 style="font-size:24px;/u);
     assert.match(wechatHtml, /<blockquote style="border-left:3px solid #2c78e4;/u);
     assert.match(wechatHtml, /<img src="https:\/\/example.com\/image.png"[^>]+style="display:block;/u);
+    assert.strictEqual(articles.renderWechatArticleHtml({ ...manifest, articleTheme: "classic", body: `# 标题\n\n> 引言\n\n${managedBody}` },
+      { [assetId]: "https://example.com/image.png" }), wechatHtml);
+    const editorialBody = `# 标题\n\n## 小节\n\n**强调**与[链接](https://example.com)\n\n> 引言\n\n- 一项\n- 二项\n\n---\n\n\`代码\`\n\n${managedBody}`;
+    const editorialHtml = articles.renderWechatArticleHtml({ ...manifest, articleTheme: "editorial", body: editorialBody },
+      { [assetId]: "https://example.com/image.png" });
+    assert.match(editorialHtml, /<section style="font-size:16px;line-height:1\.9;letter-spacing:0\.2px;/u);
+    assert.match(editorialHtml, /<h1 style="[^"]*border-bottom:3px solid #2b7468;/u);
+    assert.match(editorialHtml, /<h2 style="font-size:20px;[^"]*border-left:4px solid #2b7468;background:#edf5f0;/u);
+    assert.match(editorialHtml, /<strong style="font-weight:700;color:#2b7468;">强调<\/strong>/u);
+    assert.match(editorialHtml, /<blockquote style="border-left:4px solid #2b7468;/u);
+    assert.match(editorialHtml, /<ul style="margin:4px 0 18px;/u);
+    assert.match(editorialHtml, /<hr style="border:0;border-top:1px solid #c8ded4;/u);
+    assert.match(editorialHtml, /<code style="font-family:monospace;background:#edf5f0;/u);
+    assert.match(editorialHtml, /<img src="https:\/\/example.com\/image.png"[^>]+style="display:block;[^"]*border-radius:10px;/u);
+    const introductoryHtml = articles.renderWechatArticleHtml({ ...manifest, articleTheme: "editorial", body: "导语。\n\n正文。" }, {});
+    assert.match(introductoryHtml, /<p style="margin:0 0 24px;padding:14px 16px;border-left:4px solid #2b7468;/u);
+    assert.match(introductoryHtml, /<p style="margin:0 0 18px;line-height:1\.9;">正文。<\/p>/u);
+    assert.match(articles.renderWechatArticleHtml({ ...manifest, articleTheme: "editorial", body: "<script>alert(1)</script>" }, {}), /&lt;script&gt;/u);
+    assert.doesNotMatch(articles.renderWechatArticleHtml({ ...manifest, articleTheme: "editorial", body: "[危险](javascript:alert(1))" }, {}), /href=/u);
     assert.deepStrictEqual(articles.articleImageIds({ ...manifest, body: `[![图](ebao-asset://${assetId})](https://example.com)` }), [assetId]);
     assert.match(articles.renderWechatArticleHtml({ ...manifest, body: "<script>alert(1)</script>" }, {}), /&lt;script&gt;/u);
     assert.throws(() => articles.renderArticleHtml({ ...manifest, body: managedBody }, {}), /上传未完成/u);
@@ -200,6 +221,15 @@ const root = path.join(__dirname, "..");
     assert.throws(() => articles.articleImageIds({ ...manifest, body: "<img src='file:///tmp/a'>" }), /原始 HTML/u);
     assert.throws(() => articles.articleImageIds({ ...manifest, body: "![错误](ebao-asset://33333333-3333-4333-8333-333333333333)" }), /必须引用/u);
     const checked = packages.readContentPackage(source, contentId, 3, "article");
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...manifest, articleTheme: "editorial" }));
+    assert.strictEqual(packages.readContentPackage(source, contentId, 3, "article").manifest.articleTheme, "editorial");
+    for (const articleTheme of ["unknown", null, 1]) {
+      fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...manifest, articleTheme }));
+      assert.throws(() => packages.readContentPackage(source, contentId, 3, "article"), /文章排版主题无效/u);
+    }
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...manifest, contentType: "image-note", articleTheme: "classic" }));
+    assert.throws(() => packages.readContentPackage(source, contentId, 3, "image-note"), /文章排版主题无效/u);
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify(manifest));
     const blankMaster = { ...manifest, title: "", body: "", platformVariants: {
       wxmp: { title: "完整公众号标题", body: "## 完整公众号正文", coverAssetId: assetId },
       juejin: { title: "完整掘金标题", body: "完整掘金正文", assetOrder: [assetId] },

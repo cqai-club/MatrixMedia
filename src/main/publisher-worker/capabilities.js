@@ -39,7 +39,10 @@ export function platformCapabilities() {
       requiredFields.article = articleSettings.requiredFields;
       maxAssets.article = articleSettings.maxAssets;
     }
-    return { platform, contentTypes: types, modes, requiredFields, maxAssets, maxTitleLength };
+    return {
+      platform, contentTypes: types, modes, requiredFields, maxAssets, maxTitleLength,
+      ...(platform === "wxmp" ? { articleThemeVersion: 1 } : {}),
+    };
   });
 }
 

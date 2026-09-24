@@ -5,6 +5,7 @@ import { PublisherProtocolError } from "./protocol.js";
 
 const markdown = new MarkdownIt({ html: false, linkify: false });
 const wechatMarkdown = new MarkdownIt({ html: false, linkify: false });
+const editorialMarkdown = new MarkdownIt({ html: false, linkify: false });
 const managedImage = /^ebao-asset:\/\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/iu;
 
 const WECHAT_STYLES = {
@@ -43,6 +44,51 @@ const codeRule = (tokens, index) => `<pre style="background:#f5f8fc;padding:12px
 wechatMarkdown.renderer.rules.fence = codeRule;
 wechatMarkdown.renderer.rules.code_block = codeRule;
 wechatMarkdown.renderer.rules.code_inline = (tokens, index) => `<code style="font-family:monospace;background:#f5f8fc;padding:2px 4px;color:#344054;">${escapeHtml(tokens[index].content)}</code>`;
+
+const EDITORIAL_STYLES = {
+  blockquote_open: "border-left:4px solid #2b7468;padding:12px 16px;margin:22px 0;background:#edf5f0;color:#3d6259;",
+  bullet_list_open: "margin:4px 0 18px;padding-left:26px;line-height:1.9;",
+  ordered_list_open: "margin:4px 0 18px;padding-left:26px;line-height:1.9;",
+  list_item_open: "margin:0 0 8px;",
+  link_open: "color:#2b7468;text-decoration:underline;",
+  strong_open: "font-weight:700;color:#2b7468;",
+  table_open: "width:100%;border-collapse:collapse;margin:22px 0;",
+  th_open: "border:1px solid #c8ded4;padding:10px;background:#edf5f0;text-align:left;",
+  td_open: "border:1px solid #c8ded4;padding:10px;",
+  hr: "border:0;border-top:1px solid #c8ded4;margin:28px 0;",
+};
+for (const [rule, style] of Object.entries(EDITORIAL_STYLES)) {
+  editorialMarkdown.renderer.rules[rule] = (tokens, index, options, _env, self) => {
+    tokens[index].attrSet("style", style);
+    return self.renderToken(tokens, index, options);
+  };
+}
+editorialMarkdown.renderer.rules.paragraph_open = (tokens, index, options, _env, self) => {
+  const style = index === 0
+    ? "margin:0 0 24px;padding:14px 16px;border-left:4px solid #2b7468;background:#edf5f0;color:#273b35;font-size:17px;line-height:1.85;"
+    : "margin:0 0 18px;line-height:1.9;";
+  tokens[index].attrSet("style", style);
+  return self.renderToken(tokens, index, options);
+};
+editorialMarkdown.renderer.rules.heading_open = (tokens, index, options, _env, self) => {
+  const level = Number(tokens[index].tag.slice(1));
+  const base = level === 1
+    ? "font-size:26px;line-height:1.4;font-weight:700;color:#273b35;margin:30px 0 20px;padding:0 0 12px;border-bottom:3px solid #2b7468;"
+    : level === 2
+      ? "font-size:20px;line-height:1.5;font-weight:700;color:#273b35;margin:28px 0 16px;padding:10px 12px;border-left:4px solid #2b7468;background:#edf5f0;"
+      : "font-size:18px;line-height:1.5;font-weight:700;color:#2b7468;margin:24px 0 12px;";
+  tokens[index].attrSet("style", base);
+  return self.renderToken(tokens, index, options);
+};
+const editorialDefaultImageRule = editorialMarkdown.renderer.rules.image;
+editorialMarkdown.renderer.rules.image = (tokens, index, options, env, self) => {
+  tokens[index].attrSet("style", "display:block;width:100%;max-width:100%;height:auto;margin:24px auto;border-radius:10px;");
+  return editorialDefaultImageRule(tokens, index, options, env, self);
+};
+const editorialCodeRule = (tokens, index) => `<pre style="background:#edf5f0;border-left:3px solid #c8ded4;padding:14px 16px;margin:20px 0;white-space:pre-wrap;word-break:break-word;"><code style="font-family:monospace;font-size:14px;line-height:1.7;color:#273b35;">${escapeHtml(tokens[index].content)}</code></pre>\n`;
+editorialMarkdown.renderer.rules.fence = editorialCodeRule;
+editorialMarkdown.renderer.rules.code_block = editorialCodeRule;
+editorialMarkdown.renderer.rules.code_inline = (tokens, index) => `<code style="font-family:monospace;background:#edf5f0;padding:2px 4px;color:#2b7468;">${escapeHtml(tokens[index].content)}</code>`;
 
 function invalid(message) {
   throw new PublisherProtocolError("invalid-content", message);
@@ -89,5 +135,8 @@ export function renderArticleHtml(manifest, uploadedUrls) {
 
 /** WeChat strips external stylesheets; a conservative inline style survives its draft editor. */
 export function renderWechatArticleHtml(manifest, uploadedUrls) {
+  if (manifest.articleTheme === "editorial") {
+    return `<section style="font-size:16px;line-height:1.9;letter-spacing:0.2px;color:#273b35;background:#fffdf8;padding:18px 16px;word-break:break-word;">${renderArticle(manifest, uploadedUrls, editorialMarkdown)}</section>`;
+  }
   return `<section style="font-size:16px;line-height:1.8;color:#252b32;word-break:break-word;">${renderArticle(manifest, uploadedUrls, wechatMarkdown)}</section>`;
 }

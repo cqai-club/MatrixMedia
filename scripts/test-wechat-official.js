@@ -54,6 +54,14 @@ const { pathToFileURL } = require("url");
     assert.match(article.content, /https:\/\/mmbiz\.qpic\.cn\/image\.png/u);
     assert.match(article.content, /<img [^>]+style="display:block;/u);
     requests.length = 0;
+    const themedManifest = { ...manifest, articleTheme: "editorial", body: `导语。\n\n## 小节\n\n![图](ebao-asset://${assetId})` };
+    const themedDraft = await client.submit(credentials, submission, themedManifest, themedManifest.body);
+    assert.strictEqual(themedDraft.status, "draft");
+    const themedArticle = JSON.parse(requests.find(item => item.pathname === "/cgi-bin/draft/add").options.body).articles[0];
+    assert.match(themedArticle.content, /<section style="font-size:16px;line-height:1\.9;letter-spacing:0\.2px;/u);
+    assert.match(themedArticle.content, /<p style="margin:0 0 24px;padding:14px 16px;border-left:4px solid #2b7468;/u);
+    assert.match(themedArticle.content, /<h2 style="font-size:20px;[^"]*border-left:4px solid #2b7468;/u);
+    requests.length = 0;
     const published = await client.submit(credentials, { ...submission, mode: "publish" }, manifest, manifest.body);
     assert.strictEqual(published.status, "success");
     assert.deepStrictEqual(requests.map(item => item.pathname), [

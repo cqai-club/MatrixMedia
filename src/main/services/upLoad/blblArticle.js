@@ -1,20 +1,39 @@
 "use strict";
 
 import { clipboard } from "electron";
+import MarkdownIt from "markdown-it";
 import { replyPublishFailure, replyPublishOutcome, readPageUrl } from "./publishOutcome.js";
 import { WAIT_SELECTOR_APPEAR_MS } from "./uploadTimeouts.js";
 
-const escapeHtml = value => String(value).replace(/[&<>"']/gu, char => ({
-  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-})[char]);
+// Raw HTML is text, and markdown-it rejects unsafe link schemes by default.
+const articleMarkdown = new MarkdownIt({ html: false, linkify: false });
+
+function walkTokens(tokens, visit) {
+  for (const token of tokens) {
+    visit(token);
+    if (token.children) walkTokens(token.children, visit);
+  }
+}
+
+function prepareArticle(markdown) {
+  const tokens = articleMarkdown.parse(String(markdown || ""), {});
+  let plainText = "";
+  walkTokens(tokens, token => {
+    if (token.type === "image") throw new Error("哔哩哔哩专栏暂不支持正文插图，请只使用封面图片");
+    if (["text", "code_inline", "code_block", "fence", "html_inline", "html_block"].includes(token.type)) {
+      plainText += token.content;
+    } else if (["softbreak", "hardbreak", "paragraph_close", "heading_close", "list_item_close", "hr"].includes(token.type)) {
+      plainText += "\n";
+    }
+  });
+  return {
+    html: articleMarkdown.renderer.render(tokens, articleMarkdown.options, {}),
+    text: plainText.replace(/\n{3,}/gu, "\n\n").trim(),
+  };
+}
 
 export function markdownToArticleHtml(markdown) {
-  return String(markdown).split(/\r?\n/u).map(line => {
-    if (!line.trim()) return "<p><br></p>";
-    const heading = /^(#{1,3})\s+(.+)$/u.exec(line);
-    if (heading) return `<h${heading[1].length}>${escapeHtml(heading[2])}</h${heading[1].length}>`;
-    return `<p>${escapeHtml(line)}</p>`;
-  }).join("");
+  return prepareArticle(markdown).html;
 }
 
 async function editorSelector(page) {
@@ -55,8 +74,9 @@ export default async function publishBilibiliArticle(page, data, window, event) 
     if (!selector) throw new Error("未找到哔哩哔哩专栏正文编辑器");
     const previousText = clipboard.readText();
     const previousHtml = clipboard.readHTML();
+    const article = prepareArticle(data.data?.content || "");
     try {
-      clipboard.write({ html: markdownToArticleHtml(data.data?.content || ""), text: String(data.data?.content || "") });
+      clipboard.write(article);
       await page.click(selector);
       const modifier = process.platform === "darwin" ? "Meta" : "Control";
       await page.keyboard.down(modifier);
@@ -65,7 +85,7 @@ export default async function publishBilibiliArticle(page, data, window, event) 
     } finally {
       clipboard.write({ html: previousHtml, text: previousText });
     }
-    const probe = String(data.data?.content || "").split(/\r?\n/u).map(line => line.replace(/^#+\s*/u, "").trim()).find(Boolean)?.slice(0, 12) || "";
+    const probe = article.text.split(/\r?\n/u).find(Boolean)?.slice(0, 12) || "";
     const bodyWritten = await page.evaluate((target, expected) => {
       const body = document.querySelector(target);
       return Boolean(body && expected && String(body.textContent || "").includes(expected));
