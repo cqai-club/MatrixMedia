@@ -84,3 +84,16 @@ export function captureContentPackage(source, snapshotsRoot, submissionId) {
     throw error;
   }
 }
+
+/** A finished submission owns only its captured package, never the editable source content. */
+export function removeSubmissionSnapshot(snapshotsRoot, submission) {
+  if (!submission || !UUID.test(submission.id) || typeof submission.snapshotDirectory !== "string") return false;
+  const expected = path.join(path.resolve(snapshotsRoot), submission.id);
+  if (path.resolve(submission.snapshotDirectory) !== expected) return false;
+  const root = fs.lstatSync(snapshotsRoot);
+  const snapshot = fs.lstatSync(expected);
+  if (!root.isDirectory() || root.isSymbolicLink() || !snapshot.isDirectory() || snapshot.isSymbolicLink()) return false;
+  if (fs.realpathSync(expected) !== path.join(fs.realpathSync(snapshotsRoot), submission.id)) return false;
+  fs.rmSync(expected, { recursive: true, force: true });
+  return true;
+}

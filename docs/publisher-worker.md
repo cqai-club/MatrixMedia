@@ -68,3 +68,7 @@ Supervisor 通过 stdin/stdout 使用逐行 JSON（NDJSON）。stdout 只写响�
 - 失败截图和 MatrixMedia 内部发布记录写入 `--data-dir` 下的隔离目录，不污染独立 MatrixMedia 数据。
 
 本协议是 e宝与内置 Helper 之间的私有本机接口，不替代 MatrixMedia 原有 CLI、HTTP API 或 MCP 契约。
+
+微信公众号（`wxmp`）是仅用于文章的独立平台，不复用视频号 Cookie。`accounts.create` 需要 `appId` 和 `appSecret`；Worker 用 macOS 安全存储加密 AppSecret，公开账号列表不返回凭据。`accounts.checkLogin` 仅验证接口调用凭据，草稿与发布权限还要由公众号侧配置。文章适配器使用微信官方草稿箱和发布接口；“立即发布”不是群发。提交发布超时或状态未定时不自动重试，需到公众号后台核对。
+
+调试任一平台账号后台页面时，先在 MatrixMedia 目录用 Node 20 运行 `npm run build:publisher-worker:account-name`，再从仓库根目录执行 `corepack yarn dev:beta:publisher-tabs`。此命令将 Beta 指向刚构建的 `build/publisher-worker-account-name/mac-universal/MatrixMedia Publisher Worker.app`。需要调试控制台时改用 `corepack yarn dev:beta:publisher-debug`，它会传入 `EBAO_PUBLISHER_ACCOUNT_DEVTOOLS=1`，为账号后台及编辑页签打开独立 DevTools。平台编辑页通过 `window.open` 或 `target=_blank` 打开时，Worker 允许同平台 HTTPS 页面沿用该账号 session，并在 macOS 上并入该账号后台窗口的原生页签；跨平台及非 HTTPS 地址仍被拦截。修改 Worker 源码后须重新构建 Helper 并重启 e宝工坊才会生效。

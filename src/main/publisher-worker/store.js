@@ -3,6 +3,7 @@
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
+import { PublisherProtocolError } from "./protocol.js";
 
 function readJson(file, fallback) {
   try {
@@ -16,7 +17,7 @@ function readJson(file, fallback) {
 function atomicWrite(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), "utf8");
+  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), { encoding: "utf8", mode: 0o600 });
   fs.renameSync(temporary, file);
 }
 
@@ -26,11 +27,22 @@ export function publicAccount(account) {
     displayName: account.displayName,
     platform: account.platform,
     loginState: account.loginState || "unknown",
+    ...(typeof account.loginError === "string" && account.loginError ? { loginError: account.loginError } : {}),
     ...(Number.isFinite(account.expiresAt) ? { expiresAt: account.expiresAt } : {}),
   };
 }
 
 export function publicSubmission(submission) {
+  const state = ["queued", "running", "completed", "failed", "unknown"].includes(submission.state)
+    ? submission.state : "unknown";
+  const diagnostic = typeof submission.message === "string" && submission.message.trim()
+    ? submission.message
+    : state === "unknown" && Array.isArray(submission.result?.results)
+      ? submission.result.results.find(item => item?.status === "unknown" && typeof item.message === "string")?.message
+      : undefined;
+  const message = typeof diagnostic === "string"
+    ? diagnostic.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 200)
+    : "";
   return {
     id: submission.id,
     createdAt: submission.createdAt,
@@ -39,6 +51,8 @@ export function publicSubmission(submission) {
     ...(submission.workId ? { workId: submission.workId } : {}),
     title: submission.title,
     mode: submission.mode,
+    state,
+    ...(message ? { message } : {}),
     targets: submission.targets.map(target => ({
       accountId: target.accountId,
       platform: target.platform,
@@ -87,9 +101,12 @@ export class PublisherStore {
       // two e宝 accounts can never collapse onto the same `persist:ebao` session.
       partition: input.partition || `persist:ebao_${id.replace(/-/gu, "")}`,
       loginState: input.loginState || "unknown",
+      ...(input.autoName ? { autoName: true } : {}),
       createdAt: input.createdAt || new Date().toISOString(),
       ...(input.importedFrom ? { importedFrom: input.importedFrom } : {}),
       ...(input.proxy ? { proxy: input.proxy } : {}),
+      ...(input.appId ? { appId: input.appId } : {}),
+      ...(input.credentialCiphertext ? { credentialCiphertext: input.credentialCiphertext } : {}),
     };
     this.accountsState.accounts.push(account);
     this.saveAccounts();
@@ -161,6 +178,23 @@ export class PublisherStore {
     if (!submission) return null;
     Object.assign(submission, patch);
     this.saveSubmissions();
+    return submission;
+  }
+  deleteFinishedSubmission(id, acknowledgeUnknown = false) {
+    const submission = this.submission(id);
+    if (!submission) throw new PublisherProtocolError("submission-not-found", "提交记录不存在，请刷新发布历史");
+    if (submission.state === "queued" || submission.state === "running") {
+      throw new PublisherProtocolError("submission-busy", "提交仍在排队或执行，不能删除；删除历史不会取消发布任务");
+    }
+    if (submission.state === "unknown" && acknowledgeUnknown !== true) {
+      throw new PublisherProtocolError("submission-unknown", "提交结果尚未确认，不能删除；请先到平台后台核对");
+    }
+    if (submission.state !== "completed" && submission.state !== "failed" && submission.state !== "unknown") {
+      throw new PublisherProtocolError("submission-not-finished", "只能删除已完成或已失败的提交记录");
+    }
+    const next = { ...this.submissionsState, submissions: this.submissionsState.submissions.filter(item => item.id !== id) };
+    atomicWrite(this.submissionsFile, next);
+    this.submissionsState = next;
     return submission;
   }
   recoverInterrupted() {

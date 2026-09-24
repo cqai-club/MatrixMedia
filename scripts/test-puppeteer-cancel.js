@@ -63,8 +63,34 @@ async function main() {
 
   const {
     createPuppeteerTaskRuntime,
+    createPublishAttemptTransport,
     normalizePuppeteerVideoTaskData,
   } = require(bundlePath);
+
+  // 图文失败必须先交付原始原因并结束任务，关窗回执不能覆盖它。
+  for (const result of [
+    { status: false, message: "等待小红书图文图片上传完成超时" },
+    { status: true, publishAbnormal: true, needsAttention: true, message: "平台结果待确认" },
+    { status: true, message: "图文草稿已提交" },
+  ]) {
+    const replies = [];
+    let finished = false;
+    let finishes = 0;
+    const transport = createPublishAttemptTransport(
+      { publisherWorker: true, pt: "小红书", textType: "image-note" },
+      { reply: (channel, payload) => replies.push({ channel, payload }) },
+      () => finished,
+      () => { finished = true; finishes += 1; },
+    );
+    transport.reply("puppeteerFile-done", result);
+    transport.reply("puppeteerFile-done", { status: false, message: "窗口已关闭，任务结束" });
+    assert.deepStrictEqual(replies, [{ channel: "puppeteerFile-done", payload: result }]);
+    assert.strictEqual(finishes, 1);
+  }
+  const legacyFailure = { status: false, message: "旧 GUI 发布失败" };
+  const legacy = createPublishAttemptTransport({}, { reply() { assert.fail("旧 GUI 失败仍应交给重试路径"); } },
+    () => false, () => assert.fail("旧 GUI 尚未完成"));
+  assert.throws(() => legacy.reply("puppeteerFile-done", legacyFailure), error => error._mmUploadFailurePayload === legacyFailure);
 
   const articleData = {
     textType: "article",

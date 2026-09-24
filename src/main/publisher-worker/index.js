@@ -73,6 +73,7 @@ async function main() {
     "accounts.importApply": () => service.accounts.importApply(),
     "submissions.create": params => service.createSubmission(params),
     "submissions.list": () => service.store.listSubmissions(),
+    "submissions.delete": params => service.deleteSubmission(params),
   };
   const stopProtocol = startNdjsonServer({ input: process.stdin, output: process.stdout, handlers });
   process.stdin.resume();

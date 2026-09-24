@@ -6,14 +6,33 @@ const os = require("os");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const { createHash } = require("crypto");
+const vm = require("vm");
 
 const root = path.join(__dirname, "..");
 
 (async () => {
   const workerEntry = fs.readFileSync(path.join(root, "src/main/publisher-worker/index.js"), "utf8");
   assert.match(workerEntry, /app\.on\("window-all-closed",\s*\(\)\s*=>/u);
+  assert.match(workerEntry, /"submissions\.delete": params => service\.deleteSubmission\(params\)/u);
   const protocol = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/protocol.js")));
   const storeModule = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/store.js")));
+  const accountNames = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/account-name.js")));
+  assert.strictEqual(accountNames.normalizeAccountName("  抖音创作者  "), "抖音创作者");
+  assert.strictEqual(accountNames.normalizeAccountName("登录"), null);
+  assert.strictEqual(accountNames.normalizeAccountName("a".repeat(101)), null);
+  const domName = vm.runInNewContext(accountNames.profileNameScript("抖音"), {
+    document: { querySelectorAll: () => [{ getClientRects: () => [1], textContent: "已登录账号" }] },
+  });
+  assert.strictEqual(accountNames.normalizeAccountName(domName), "已登录账号");
+  const apiName = await vm.runInNewContext(accountNames.DOUYIN_PROFILE_SCRIPT, {
+    AbortController, setTimeout, clearTimeout,
+    fetch: async (url, options) => {
+      assert.strictEqual(url, "/aweme/v1/creator/user/info/");
+      assert.strictEqual(options.credentials, "same-origin");
+      return { ok: true, json: async () => ({ status_code: 0, douyin_user_verify_info: { nick_name: "抖音昵称" } }) };
+    },
+  });
+  assert.strictEqual(apiName, "抖音昵称");
   const capabilities = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/capabilities.js")));
   const packages = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/content-package.js")));
   const articles = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/article-content.js")));
@@ -86,14 +105,51 @@ const root = path.join(__dirname, "..");
     assert.strictEqual(store.account(account.id).partition, originalPartition);
     const second = store.addAccount({ displayName: "第二账号", platform: "dy", pt: "抖音" });
     assert.notStrictEqual(second.partition, account.partition);
+    const pending = store.addAccount({ displayName: "待识别的抖音账号", platform: "dy", pt: "抖音", autoName: true });
+    assert.strictEqual(store.account(pending.id).autoName, true);
+    store.updateAccount(pending.id, { displayName: "平台昵称", autoName: false });
+    assert.strictEqual(store.account(pending.id).autoName, false);
     store.updateSubmission(submission.id, { state: "running" });
     const restored = new storeModule.PublisherStore(temporary);
     restored.recoverInterrupted();
     assert.strictEqual(restored.submission(submission.id).state, "unknown");
     assert.strictEqual(restored.listSubmissions()[0].targets[0].accountName, "测试账号");
-    assert.ok(!Object.prototype.hasOwnProperty.call(restored.listSubmissions()[0], "state"));
+    assert.strictEqual(restored.listSubmissions()[0].state, "unknown");
+    assert.strictEqual(restored.listSubmissions()[0].message, "上次运行被中断，未自动重试，请到平台后台确认");
     assert.ok(!Object.prototype.hasOwnProperty.call(restored.listSubmissions()[0], "file"));
     assert.strictEqual(restored.submissionsState.schemaVersion, 2);
+    assert.throws(() => restored.deleteFinishedSubmission(submission.id), error => error.code === "submission-unknown");
+    assert.throws(() => restored.deleteFinishedSubmission(submission.id, false), error => error.code === "submission-unknown");
+    assert.ok(new storeModule.PublisherStore(temporary).submission(submission.id));
+    const uncertain = restored.createSubmission({ workId: "work-unknown", file: "/tmp/video-unknown.mp4", title: "结果待确认", mode: "draft" }, [account]);
+    restored.updateSubmission(uncertain.id, { state: "unknown", result: { results: [
+      { status: "unknown", message: `头条草稿保存未确认\n${"待核对".repeat(80)}` },
+    ] } });
+    const publicUncertain = restored.listSubmissions().find(item => item.id === uncertain.id);
+    assert.strictEqual(publicUncertain.state, "unknown");
+    assert.ok(publicUncertain.message.startsWith("头条草稿保存未确认 待核对"));
+    assert.strictEqual(publicUncertain.message.length, 200);
+    assert.ok(!Object.prototype.hasOwnProperty.call(publicUncertain, "result"));
+    assert.strictEqual(restored.deleteFinishedSubmission(uncertain.id, true).id, uncertain.id);
+    assert.strictEqual(new storeModule.PublisherStore(temporary).submission(uncertain.id), undefined);
+    const removable = restored.createSubmission({ workId: "work-2", file: "/tmp/video-2.mp4", title: "可删除", mode: "draft" }, [account]);
+    assert.throws(() => restored.deleteFinishedSubmission(removable.id), error => error.code === "submission-busy");
+    assert.throws(() => restored.deleteFinishedSubmission(removable.id, true), error => error.code === "submission-busy");
+    assert.ok(restored.queued().some(item => item.id === removable.id));
+    restored.updateSubmission(removable.id, { state: "running" });
+    assert.throws(() => restored.deleteFinishedSubmission(removable.id), error => error.code === "submission-busy");
+    assert.throws(() => restored.deleteFinishedSubmission(removable.id, true), error => error.code === "submission-busy");
+    assert.strictEqual(restored.submission(removable.id).state, "running");
+    restored.updateSubmission(removable.id, { state: "completed" });
+    assert.strictEqual(restored.deleteFinishedSubmission(removable.id).id, removable.id);
+    assert.strictEqual(new storeModule.PublisherStore(temporary).submission(removable.id), undefined);
+    assert.ok(new storeModule.PublisherStore(temporary).submission(submission.id));
+    assert.throws(() => restored.deleteFinishedSubmission(removable.id), error => error.code === "submission-not-found");
+    const failed = restored.createSubmission({ workId: "work-3", file: "/tmp/video-3.mp4", title: "失败", mode: "publish" }, [account]);
+    restored.updateSubmission(failed.id, { state: "failed" });
+    assert.strictEqual(restored.deleteFinishedSubmission(failed.id).id, failed.id);
+    assert.strictEqual(restored.deleteFinishedSubmission(submission.id, true).id, submission.id);
+    assert.strictEqual(new storeModule.PublisherStore(temporary).submission(submission.id), undefined);
 
     const legacyDir = path.join(temporary, "legacy");
     fs.mkdirSync(legacyDir);
@@ -137,6 +193,19 @@ const root = path.join(__dirname, "..");
     fs.writeFileSync(path.join(snapshot, "manifest.json"), JSON.stringify(changedManifest));
     fs.writeFileSync(path.join(snapshot, "assets", assetId), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 2]));
     assert.throws(() => packages.readContentPackage(snapshot, contentId, 3, "article", false), /素材已改变/u);
+    const snapshotsRoot = path.join(temporary, "snapshots");
+    const outside = path.join(temporary, "outside-snapshot");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "keep"), "safe");
+    assert.strictEqual(packages.removeSubmissionSnapshot(snapshotsRoot, { id: snapshotId, snapshotDirectory: outside }), false);
+    assert.strictEqual(fs.existsSync(path.join(outside, "keep")), true);
+    const linkedId = "44444444-4444-4444-8444-444444444444";
+    const linkedSnapshot = path.join(snapshotsRoot, linkedId);
+    fs.symlinkSync(outside, linkedSnapshot, "dir");
+    assert.strictEqual(packages.removeSubmissionSnapshot(snapshotsRoot, { id: linkedId, snapshotDirectory: linkedSnapshot }), false);
+    assert.strictEqual(fs.existsSync(path.join(outside, "keep")), true);
+    assert.strictEqual(packages.removeSubmissionSnapshot(snapshotsRoot, { id: snapshotId, snapshotDirectory: snapshot }), true);
+    assert.strictEqual(fs.existsSync(snapshot), false);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

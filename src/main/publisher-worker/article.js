@@ -1,11 +1,14 @@
 "use strict";
 
+import fs from "fs";
+import os from "os";
 import path from "path";
 import ptConfig from "../config/ptConfig";
 import { cancelPuppeteerTasks, runPuppeteerTask } from "../services/puppeteerFile";
 import { PublisherProtocolError } from "./protocol.js";
 import { articleImageIds } from "./article-content.js";
 import { publisherUserAgent } from "./userAgent.js";
+import { WechatOfficialClient } from "./wechat-official.js";
 
 const TIMEOUT_MS = 25 * 60 * 1000;
 const DISCLOSURES = {
@@ -21,6 +24,11 @@ const DISCLOSURES = {
 export function withDisclosure(body, statement) {
   const text = DISCLOSURES[statement] || "";
   return text ? `${body.trimEnd()}\n\n> 内容声明：${text}` : body;
+}
+
+export function runWechatOfficialArticle(account, submission, manifest, credentials, client = new WechatOfficialClient()) {
+  if (account.platform !== "wxmp") throw new PublisherProtocolError("unsupported-platform", "公众号文章适配器不可用");
+  return client.submit(credentials, submission, manifest, withDisclosure(manifest.body, manifest.creativeStatement));
 }
 
 function runWorkerTask(payload, mode) {
@@ -100,14 +108,33 @@ export function runJuejinArticle(account, submission, manifest) {
   return runWorkerTask(payload, submission.mode);
 }
 
-export function runXhsImageNote(account, submission, manifest) {
+export async function runXhsImageNote(account, submission, manifest) {
   if (account.platform !== "xhs") throw new PublisherProtocolError("unsupported-platform", "图文平台适配器尚未开放");
+  // 快照使用无扩展名 UUID；浏览器文件输入框需要扩展名识别图片 MIME。
+  // 只给上传副本补后缀，保留不可变快照以及用户选择的图片顺序。
+  const uploadDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ebao-xhs-images-"));
+  try {
+    const suffixes = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
+    const imagePaths = manifest.assets.map(asset => {
+      const suffix = suffixes[asset.mime];
+      if (!suffix) throw new PublisherProtocolError("invalid-content", "不支持的图文图片格式");
+      const destination = path.join(uploadDirectory, `${asset.id}${suffix}`);
+      fs.copyFileSync(path.join(submission.snapshotDirectory, "assets", asset.id), destination, fs.constants.COPYFILE_EXCL);
+      return destination;
+    });
+    return await runXhsImageNoteTask(account, submission, manifest, imagePaths);
+  } finally {
+    fs.rmSync(uploadDirectory, { recursive: true, force: true });
+  }
+}
+
+function runXhsImageNoteTask(account, submission, manifest, imagePaths) {
   const cfg = ptConfig[account.pt];
   const payload = {
     taskId: Date.now() + Math.random(),
     textType: "image-note",
     bookName: manifest.title,
-    imagePaths: manifest.assets.map(asset => path.join(submission.snapshotDirectory, "assets", asset.id)),
+    imagePaths,
     data: {
       title: manifest.title,
       description: manifest.body,
@@ -175,7 +202,7 @@ function runWebArticle(account, submission, manifest, url) {
       title: manifest.title,
       content: withDisclosure(manifest.body, manifest.creativeStatement),
       summary: manifest.summary || "",
-      tags: manifest.tags,
+      // 头条和百家号文章标签写入未验收；不传给页面适配器，草稿标签供其他平台使用。
       images: manifest.assets.filter(asset => usedImages.has(asset.id)).map(asset => ({
         id: asset.id, mime: asset.mime, path: path.join(submission.snapshotDirectory, "assets", asset.id),
       })),

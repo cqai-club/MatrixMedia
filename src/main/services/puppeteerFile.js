@@ -48,6 +48,31 @@ export function createIpcTransport(ipcEvent) {
   };
 }
 
+export function createPublishAttemptTransport(data, transport, isFinished, finishOnce) {
+  return {
+    reply(channel, ...args) {
+      if (isFinished()) return false;
+      const payload = args[0];
+      // Worker 只执行一次：直接交付真实结果并结束任务，避免失败回执被
+      // 旧 GUI 重试逻辑吞掉，再由关窗事件覆盖成“窗口已关闭”。
+      if (data.publisherWorker && channel === "puppeteerFile-done") {
+        const replied = transport.reply(channel, ...args);
+        finishOnce();
+        return replied;
+      }
+      if (channel === "puppeteerFile-done" && payload && payload.status === false) {
+        const err = new Error(payload.message || "平台上传失败");
+        err._mmUploadFailurePayload = payload;
+        throw err;
+      }
+      const ok = channel === "puppeteerFile-done" && payload && payload.status === true && !payload.skipped;
+      const replied = transport.reply(channel, ...args);
+      if (ok) finishOnce();
+      return replied;
+    },
+  };
+}
+
 export function createPuppeteerTaskRuntime({ runTask }) {
   const taskQueue = [];
   let taskBusy = false;
@@ -334,37 +359,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     if (win && !win.isDestroyed()) win.close();
   };
 
-  const createAttemptTransport = () => ({
-    reply(channel, ...args) {
-      if (finished) return false;
-      const payload = args[0];
-      // Article Worker tasks are single-attempt. Never turn a post-click
-      // uncertainty into the legacy retry path (which can duplicate a post).
-      if (data.publisherWorker && data.textType === "article" &&
-        (data.pt === "头条" || data.pt === "百家号") && channel === "puppeteerFile-done") {
-        const replied = transport.reply(channel, ...args);
-        finishOnce();
-        return replied;
-      }
-      if (
-        channel === "puppeteerFile-done" &&
-        payload &&
-        payload.status === false
-      ) {
-        const err = new Error(payload.message || "平台上传失败");
-        err._mmUploadFailurePayload = payload;
-        throw err;
-      }
-      const ok =
-        channel === "puppeteerFile-done" &&
-        payload &&
-        payload.status === true &&
-        !payload.skipped;
-      const replied = transport.reply(channel, ...args);
-      if (ok) finishOnce();
-      return replied;
-    },
-  });
+  const createAttemptTransport = () => createPublishAttemptTransport(data, transport, () => finished, finishOnce);
 
   // 小红书 + 真实 Chrome 浏览器发布（替代 Electron BrowserWindow）
   let _xhsRealChromeFallback = false;

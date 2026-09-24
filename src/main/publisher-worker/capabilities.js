@@ -1,12 +1,13 @@
 "use strict";
 
 export const VIDEO_PLATFORMS = ["dy", "sph", "xhs", "blbl", "ks", "tt", "bjh", "fqsp"];
-export const ALL_PLATFORMS = [...VIDEO_PLATFORMS, "juejin"];
+export const ALL_PLATFORMS = [...VIDEO_PLATFORMS, "juejin", "wxmp"];
 
 const CONTENT_ADAPTERS = {
   "juejin:article": { requiredFields: ["category"], maxAssets: 1 },
   "blbl:article": { requiredFields: [], maxAssets: 1 },
   "xhs:image-note": { requiredFields: [], maxAssets: 20, maxTitleLength: 20 },
+  "wxmp:article": { requiredFields: [], maxAssets: 20, maxTitleLength: 64 },
 };
 const ARTICLE_MODES = {
   tt: { requiredFields: [], maxAssets: 20 },

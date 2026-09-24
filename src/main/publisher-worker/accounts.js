@@ -1,6 +1,6 @@
 "use strict";
 
-import { app, BrowserWindow, session } from "electron";
+import { app, BrowserWindow, safeStorage, session } from "electron";
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
@@ -9,10 +9,13 @@ import { applyAccountProxyToSession } from "../services/proxyConfig.js";
 import { PublisherProtocolError } from "./protocol.js";
 import { publicAccount } from "./store.js";
 import { publisherUserAgent } from "./userAgent.js";
+import { accountWindowOptions, attachAccountWindowHandlers, allowsAccountWindowUrl } from "./account-windows.js";
+import { DOUYIN_PROFILE_SCRIPT, normalizeAccountName, profileNameScript } from "./account-name.js";
+import { WechatOfficialClient } from "./wechat-official.js";
 
 export const PLATFORM_TO_PT = {
   dy: "抖音", sph: "视频号", xhs: "小红书", blbl: "哔哩哔哩",
-  ks: "快手", tt: "头条", bjh: "百家号", fqsp: "番茄视频", juejin: "掘金",
+  ks: "快手", tt: "头条", bjh: "百家号", fqsp: "番茄视频", juejin: "掘金", wxmp: "微信公众号",
 };
 const PT_TO_PLATFORM = Object.fromEntries(Object.entries(PLATFORM_TO_PT).map(([key, value]) => [value, key]));
 
@@ -97,6 +100,7 @@ export class PublisherAccounts {
     this.store = store;
     this.busy = busy;
     this.windows = new Map();
+    this.wechat = new WechatOfficialClient();
   }
 
   list() { return this.store.listAccounts(); }
@@ -105,19 +109,52 @@ export class PublisherAccounts {
     const platform = requiredText(params.platform, "平台");
     const pt = PLATFORM_TO_PT[platform];
     if (!pt) throw new PublisherProtocolError("unsupported-platform", `不支持的平台：${platform}`);
-    const displayName = requiredText(params.displayName, "账号名称");
-    return publicAccount(this.store.addAccount({ id: randomUUID(), displayName, platform, pt }));
+    if (params.displayName !== undefined && typeof params.displayName !== "string") {
+      throw new PublisherProtocolError("invalid-account", "账号名称格式无效");
+    }
+    const requestedName = (params.displayName || "").trim();
+    if (requestedName.length > 100) throw new PublisherProtocolError("invalid-account", "账号名称不能超过 100 个字符");
+    const displayName = platform === "wxmp" ? requiredText(requestedName, "账号名称") : requestedName || `待识别的${pt}账号`;
+    if (platform === "wxmp") {
+      const appId = requiredText(params.appId, "公众号 AppID");
+      const appSecret = requiredText(params.appSecret, "公众号 AppSecret");
+      if (!/^wx[a-z0-9]{16}$/iu.test(appId) || !/^[a-z0-9]{32}$/iu.test(appSecret)) {
+        throw new PublisherProtocolError("invalid-account", "公众号 AppID 或 AppSecret 格式无效");
+      }
+      if (!safeStorage.isEncryptionAvailable()) {
+        throw new PublisherProtocolError("secure-storage-unavailable", "本机安全存储不可用，无法保存公众号密钥");
+      }
+      const credentialCiphertext = safeStorage.encryptString(appSecret).toString("base64");
+      return publicAccount(this.store.addAccount({ id: randomUUID(), displayName, platform, pt, appId, credentialCiphertext }));
+    }
+    if (params.appId !== undefined || params.appSecret !== undefined) {
+      throw new PublisherProtocolError("invalid-account", "此平台不接受公众号密钥");
+    }
+    return publicAccount(this.store.addAccount({ id: randomUUID(), displayName, platform, pt, autoName: !requestedName }));
+  }
+
+  wechatCredentials(id) {
+    const account = this.require(id);
+    if (account.platform !== "wxmp" || !account.appId || !account.credentialCiphertext || !safeStorage.isEncryptionAvailable()) {
+      throw new PublisherProtocolError("account-login-required", "公众号密钥不可用，请删除账号后重新添加");
+    }
+    try {
+      return { appId: account.appId, appSecret: safeStorage.decryptString(Buffer.from(account.credentialCiphertext, "base64")) };
+    } catch {
+      throw new PublisherProtocolError("account-login-required", "公众号密钥无法解密，请删除账号后重新添加");
+    }
   }
 
   update(params) {
     const account = this.require(params.id);
     const displayName = requiredText(params.displayName, "账号名称");
-    return publicAccount(this.store.updateAccount(account.id, { displayName }));
+    return publicAccount(this.store.updateAccount(account.id, { displayName, autoName: false }));
   }
 
   async remove(params) {
     const account = this.require(params.id);
     this.assertIdle(account.id);
+    if (account.platform === "wxmp") this.wechat.forget(account.appId);
     const win = this.windows.get(account.partition);
     if (win && !win.isDestroyed()) win.destroy();
     this.windows.delete(account.partition);
@@ -129,6 +166,17 @@ export class PublisherAccounts {
 
   async check(params) {
     const account = this.require(params.id);
+    if (account.platform === "wxmp") {
+      try {
+        await this.wechat.token(this.wechatCredentials(account.id));
+        return publicAccount(this.store.updateAccount(account.id, { loginState: "logged-in", expiresAt: undefined, loginError: undefined }));
+      } catch (error) {
+        const loginError = error instanceof PublisherProtocolError
+          ? error.message
+          : "公众号接口检查失败，请重试";
+        return publicAccount(this.store.updateAccount(account.id, { loginState: "logged-out", expiresAt: undefined, loginError }));
+      }
+    }
     const cfg = ptConfig[account.pt];
     const ses = session.fromPartition(account.partition);
     try {
@@ -136,18 +184,45 @@ export class PublisherAccounts {
       const hit = LOGIN_RULES[account.pt] && LOGIN_RULES[account.pt](cookies);
       const expiresAt = hit && hit.expirationDate ? Math.floor(hit.expirationDate * 1000) : undefined;
       const loggedIn = Boolean(hit && (!expiresAt || expiresAt > Date.now()));
-      return publicAccount(this.store.updateAccount(account.id, {
+      const patch = {
         loginState: loggedIn ? "logged-in" : "logged-out",
         ...(expiresAt ? { expiresAt } : { expiresAt: undefined }),
-      }));
+      };
+      if (loggedIn && account.autoName) {
+        const detectedName = await this.detectName(account);
+        // A manual rename or deletion may have happened while the page was read.
+        if (detectedName && this.store.account(account.id)?.autoName) {
+          patch.displayName = detectedName;
+          patch.autoName = false;
+        }
+      }
+      const current = this.store.account(account.id);
+      if (!current) throw new PublisherProtocolError("account-not-found", "账号不存在或已删除");
+      return publicAccount(this.store.updateAccount(account.id, patch));
     } catch {
+      if (!this.store.account(account.id)) throw new PublisherProtocolError("account-not-found", "账号不存在或已删除");
       return publicAccount(this.store.updateAccount(account.id, { loginState: "unknown", expiresAt: undefined }));
     }
+  }
+
+  async detectName(account) {
+    const win = this.windows.get(account.partition);
+    if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return null;
+    const url = win.webContents.getURL();
+    if (!allowsAccountWindowUrl(account.pt, url) || !url.startsWith("https://")) return null;
+    try {
+      if (account.platform === "dy" && new URL(url).hostname === "creator.douyin.com") {
+        const name = normalizeAccountName(await win.webContents.executeJavaScript(DOUYIN_PROFILE_SCRIPT));
+        if (name) return name;
+      }
+      return normalizeAccountName(await win.webContents.executeJavaScript(profileNameScript(account.pt)));
+    } catch { return null; }
   }
 
   async openLogin(params) {
     const account = this.require(params.id);
     this.assertIdle(account.id);
+    if (account.platform === "wxmp") throw new PublisherProtocolError("unsupported-operation", "公众号使用 AppID 和 AppSecret 授权，请检查接口状态");
     return this.open(account, ptConfig[account.pt].index, `登录 ${account.displayName}`);
   }
 
@@ -191,15 +266,30 @@ export class PublisherAccounts {
     // share this account session concurrently.
     this.assertIdle(account.id);
     const cfg = ptConfig[account.pt];
-    const win = new BrowserWindow({
-      width: 1200, height: 800, title, autoHideMenuBar: true,
-      webPreferences: { partition: account.partition, nodeIntegration: false, contextIsolation: true, webviewTag: false, devTools: false },
-    });
+    const debugAccountWindow = process.env.EBAO_PUBLISHER_ACCOUNT_DEVTOOLS === "1";
+    const win = new BrowserWindow({ ...accountWindowOptions(account, debugAccountWindow), title });
+    const tabs = new Set();
     this.windows.set(account.partition, win);
-    win.on("closed", () => { if (this.windows.get(account.partition) === win) this.windows.delete(account.partition); });
-    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    win.webContents.on("did-finish-load", () => {
+      if (this.store.account(account.id)?.autoName) {
+        void this.check({ id: account.id }).catch(() => {});
+      }
+    });
+    win.on("closed", () => {
+      for (const tab of tabs) if (!tab.isDestroyed()) tab.destroy();
+      tabs.clear();
+      if (this.windows.get(account.partition) === win) this.windows.delete(account.partition);
+    });
     const userAgent = publisherUserAgent(account.pt, cfg.useragent);
     if (userAgent) win.webContents.setUserAgent(userAgent);
+    attachAccountWindowHandlers(win, account, userAgent, debugAccountWindow, {
+      BrowserWindow, homeUrl: url,
+      onTabCreated(tab) {
+        tabs.add(tab);
+        tab.on("closed", () => tabs.delete(tab));
+      },
+    });
+    if (debugAccountWindow) win.webContents.openDevTools({ mode: "detach" });
     try {
       await win.loadURL(url);
     } catch (error) {

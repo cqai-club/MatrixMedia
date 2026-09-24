@@ -9,8 +9,8 @@ import { PublisherProtocolError } from "./protocol.js";
 import { PublisherStore, publicSubmission } from "./store.js";
 import { PublisherAccounts } from "./accounts.js";
 import { accepts, platformCapabilities } from "./capabilities.js";
-import { captureContentPackage, readContentPackage } from "./content-package.js";
-import { runBilibiliArticle, runJuejinArticle, runXhsImageNote, runToutiaoArticle, runBaijiahaoArticle } from "./article.js";
+import { captureContentPackage, readContentPackage, removeSubmissionSnapshot } from "./content-package.js";
+import { runBilibiliArticle, runJuejinArticle, runXhsImageNote, runToutiaoArticle, runBaijiahaoArticle, runWechatOfficialArticle } from "./article.js";
 import { articleImageIds } from "./article-content.js";
 import { publisherUserAgent } from "./userAgent.js";
 
@@ -32,6 +32,7 @@ function tags(value) {
 const CREATIVE_STATEMENTS = new Set([
   "none", "ai_generated", "fiction", "marketing", "personal_opinion", "repost", "self_made_no_repost",
 ]);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 export class PublisherWorkerService {
   constructor(root) {
@@ -53,6 +54,27 @@ export class PublisherWorkerService {
 
   health() {
     return { ready: true, busy: this.running, queued: this.store.queued().length };
+  }
+
+  deleteSubmission(params) {
+    if (!params || typeof params !== "object" || Array.isArray(params)
+      || Object.keys(params).some(key => key !== "id" && key !== "acknowledgeUnknown")
+      || typeof params.id !== "string" || !UUID.test(params.id)
+      || (Object.hasOwn(params, "acknowledgeUnknown") && typeof params.acknowledgeUnknown !== "boolean")) {
+      throw new PublisherProtocolError("invalid-submission", "提交 ID 无效");
+    }
+    const submission = this.store.deleteFinishedSubmission(params.id.toLowerCase(), params.acknowledgeUnknown === true);
+    // 超时后的浏览器任务可能仍在收尾；待确认记录只删除历史，暂留快照，避免清理素材与任务并发。
+    if (submission.state !== "unknown" && submission.snapshotDirectory) {
+      try {
+        if (!removeSubmissionSnapshot(this.snapshotsRoot, submission)) {
+          console.warn(`[publisher-worker] 提交 ${submission.id} 的内容快照未清理，路径未通过安全检查`);
+        }
+      } catch (error) {
+        console.warn(`[publisher-worker] 提交 ${submission.id} 的内容快照未清理：${error && error.message ? error.message : String(error)}`);
+      }
+    }
+    return { ok: true };
   }
 
   accountBusy(id) {
@@ -98,16 +120,15 @@ export class PublisherWorkerService {
       if (contentType === "article" && source.manifest.assets.length > 0 && !source.manifest.coverAssetId) {
         throw new PublisherProtocolError("invalid-content", "文章素材必须选择封面");
       }
-      if (contentType === "article" && selected.some(account => account.platform === "tt" || account.platform === "bjh")) {
+      if (contentType === "article" && selected.some(account => account.platform === "tt" || account.platform === "bjh" || account.platform === "wxmp")) {
         articleImageIds(source.manifest);
+      }
+      if (contentType === "article" && selected.some(account => account.platform === "wxmp")) {
+        this.accounts.wechat.validate(source.manifest);
       }
       if (contentType === "article" && selected.some(account => account.platform === "juejin" || account.platform === "blbl")
         && source.manifest.body.includes("ebao-asset://")) {
         throw new PublisherProtocolError("unsupported-content", "掘金和B站专栏暂不支持正文插图，请分开提交");
-      }
-      if (contentType === "article" && source.manifest.tags.length > 0
-        && selected.some(account => account.platform === "tt" || account.platform === "bjh")) {
-        throw new PublisherProtocolError("unsupported-content", "头条、百家号文章标签写入尚未验收，请先清空标签");
       }
       if (contentType === "article" && String(source.manifest.summary || "").trim()
         && selected.some(account => account.platform === "tt")) {
@@ -232,6 +253,9 @@ export class PublisherWorkerService {
                 results.push(await runToutiaoArticle(account, submission, content.manifest));
               } else if (account.platform === "bjh" && submission.contentType === "article") {
                 results.push(await runBaijiahaoArticle(account, submission, content.manifest));
+              } else if (account.platform === "wxmp" && submission.contentType === "article") {
+                results.push(await runWechatOfficialArticle(account, submission, content.manifest,
+                  this.accounts.wechatCredentials(account.id), this.accounts.wechat));
               } else if (account.platform === "xhs" && submission.contentType === "image-note") {
                 results.push(await runXhsImageNote(account, submission, content.manifest));
               } else {
