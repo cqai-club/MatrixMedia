@@ -41,7 +41,7 @@ export function platformCapabilities() {
     }
     return {
       platform, contentTypes: types, modes, requiredFields, maxAssets, maxTitleLength,
-      ...(platform === "wxmp" ? { articleThemeVersion: 1 } : {}),
+      ...(platform === "wxmp" ? { articleThemeVersion: 2 } : {}),
     };
   });
 }

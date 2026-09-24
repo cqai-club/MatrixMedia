@@ -90,6 +90,101 @@ editorialMarkdown.renderer.rules.fence = editorialCodeRule;
 editorialMarkdown.renderer.rules.code_block = editorialCodeRule;
 editorialMarkdown.renderer.rules.code_inline = (tokens, index) => `<code style="font-family:monospace;background:#edf5f0;padding:2px 4px;color:#2b7468;">${escapeHtml(tokens[index].content)}</code>`;
 
+// 这三套配色使用独立编写的内联样式；公众号草稿编辑器不会保留预览页的外部样式表。
+const DECORATIVE_THEMES = {
+  orangeheart: {
+    accent: "#ee705f", tint: "#fff3ee", border: "#f2c7bc", text: "#543d38", strong: "#b84e3e",
+    section: "font-size:16px;line-height:1.9;color:#543d38;background:#fffdfa;padding:18px 16px;word-break:break-word;",
+    lead: "margin:0 0 19px;padding:14px 16px;border-left:4px solid #ee705f;background:#fff3ee;color:#69453c;line-height:1.9;",
+    h1: "font-size:24px;line-height:1.4;font-weight:700;color:#ad493a;margin:30px 0 20px;padding:0 0 12px;border-bottom:2px solid #f2c7bc;",
+    h2: "font-size:20px;line-height:1.5;font-weight:700;color:#a84434;margin:29px 0 17px;padding:10px 14px;border-left:5px solid #ee705f;background:#fff3ee;",
+    h3: "font-size:18px;line-height:1.5;font-weight:700;color:#b84e3e;margin:24px 0 12px;",
+    quote: "color:#754f46;",
+    image: "display:block;width:100%;max-width:100%;height:auto;margin:23px auto;border-radius:12px;",
+    codeFrame: "border-left:3px solid #ee705f;",
+  },
+  lapis: {
+    accent: "#4870ac", tint: "#edf3fb", border: "#b8c9e0", text: "#354455", strong: "#34598f", whiteH2: true,
+    section: "font-size:16px;line-height:1.85;color:#354455;background:#fbfdff;padding:18px 16px;word-break:break-word;",
+    lead: "margin:0 0 25px;padding:13px 16px;border-top:1px solid #b8c9e0;border-bottom:1px solid #b8c9e0;background:#edf3fb;color:#354455;line-height:1.85;",
+    h1: "font-size:24px;line-height:1.4;font-weight:700;color:#34598f;margin:30px 0 20px;padding:0 0 12px;border-bottom:3px solid #4870ac;",
+    h2: "font-size:20px;line-height:1.5;font-weight:700;color:#ffffff;margin:29px 0 18px;padding:10px 15px;background:#4870ac;border-radius:4px;",
+    h3: "font-size:18px;line-height:1.5;font-weight:700;color:#34598f;margin:24px 0 12px;",
+    quote: "color:#45617e;",
+    image: "display:block;width:100%;max-width:100%;height:auto;margin:23px auto;padding:3px;border:1px solid #b8c9e0;border-radius:5px;",
+    codeFrame: "border:1px solid #b8c9e0;",
+  },
+  purple: {
+    accent: "#7656a6", tint: "#f5f0fa", border: "#d8c9e9", text: "#43384e", strong: "#6b4c96",
+    section: "font-size:16px;line-height:1.9;color:#43384e;background:#fffdff;padding:18px 16px;word-break:break-word;",
+    lead: "margin:0 0 25px;padding:15px 17px;border:1px solid #d8c9e9;border-radius:9px;background:#f5f0fa;color:#43384e;line-height:1.9;",
+    h1: "font-size:24px;line-height:1.4;font-weight:700;color:#6b4c96;text-align:center;margin:32px 0 20px;padding:0 0 14px;border-bottom:2px solid #d8c9e9;",
+    h2: "font-size:20px;line-height:1.5;font-weight:700;color:#6b4c96;margin:30px 0 18px;padding:8px 3px 11px;border-bottom:3px solid #7656a6;",
+    h3: "font-size:18px;line-height:1.5;font-weight:700;color:#7656a6;margin:24px 0 12px;",
+    quote: "color:#5e4c70;border-radius:0 9px 9px 0;",
+    image: "display:block;width:100%;max-width:100%;height:auto;margin:24px auto;border-radius:14px;",
+    codeFrame: "border:1px solid #d8c9e9;border-radius:8px;",
+  },
+};
+
+function decorativeMarkdown(theme) {
+  const renderer = new MarkdownIt({ html: false, linkify: false });
+  const styles = {
+    blockquote_open: `border-left:4px solid ${theme.accent};padding:12px 16px;margin:22px 0;background:${theme.tint};${theme.quote}`,
+    bullet_list_open: "margin:4px 0 18px;padding-left:26px;line-height:1.9;",
+    ordered_list_open: "margin:4px 0 18px;padding-left:26px;line-height:1.9;",
+    list_item_open: "margin:0 0 8px;",
+    table_open: "width:100%;border-collapse:collapse;margin:22px 0;",
+    th_open: `border:1px solid ${theme.border};padding:10px;background:${theme.tint};color:${theme.accent};text-align:left;`,
+    td_open: `border:1px solid ${theme.border};padding:10px;`,
+    hr: `border:0;border-top:2px solid ${theme.border};margin:28px 0;`,
+  };
+  for (const [rule, style] of Object.entries(styles)) {
+    renderer.renderer.rules[rule] = (tokens, index, options, _env, self) => {
+      tokens[index].attrSet("style", style);
+      return self.renderToken(tokens, index, options);
+    };
+  }
+  renderer.renderer.rules.link_open = (tokens, index, options, env, self) => {
+    const color = theme.whiteH2 && env.decorativeHeadingLevel === 2 ? "#ffffff" : theme.accent;
+    tokens[index].attrSet("style", `color:${color};text-decoration:underline;`);
+    return self.renderToken(tokens, index, options);
+  };
+  renderer.renderer.rules.strong_open = (tokens, index, options, env, self) => {
+    const color = theme.whiteH2 && env.decorativeHeadingLevel === 2 ? "#ffffff" : theme.strong;
+    tokens[index].attrSet("style", `font-weight:700;color:${color};`);
+    return self.renderToken(tokens, index, options);
+  };
+  renderer.renderer.rules.paragraph_open = (tokens, index, options, _env, self) => {
+    const firstBodyParagraph = tokens.findIndex(token => token.type === "paragraph_open" && token.level === 0);
+    tokens[index].attrSet("style", index === firstBodyParagraph ? theme.lead : "margin:0 0 18px;line-height:1.9;");
+    return self.renderToken(tokens, index, options);
+  };
+  renderer.renderer.rules.heading_open = (tokens, index, options, env, self) => {
+    const level = Number(tokens[index].tag.slice(1));
+    env.decorativeHeadingLevel = level;
+    tokens[index].attrSet("style", level === 1 ? theme.h1 : level === 2 ? theme.h2 : theme.h3);
+    return self.renderToken(tokens, index, options);
+  };
+  renderer.renderer.rules.heading_close = (tokens, index, options, env, self) => {
+    delete env.decorativeHeadingLevel;
+    return self.renderToken(tokens, index, options);
+  };
+  const defaultImageRule = renderer.renderer.rules.image;
+  renderer.renderer.rules.image = (tokens, index, options, env, self) => {
+    tokens[index].attrSet("style", theme.image);
+    return defaultImageRule(tokens, index, options, env, self);
+  };
+  const themedCodeRule = (tokens, index) => `<pre style="background:${theme.tint};${theme.codeFrame}padding:14px 16px;margin:20px 0;white-space:pre-wrap;word-break:break-word;"><code style="font-family:monospace;font-size:14px;line-height:1.7;color:${theme.text};">${escapeHtml(tokens[index].content)}</code></pre>\n`;
+  renderer.renderer.rules.fence = themedCodeRule;
+  renderer.renderer.rules.code_block = themedCodeRule;
+  renderer.renderer.rules.code_inline = (tokens, index) => `<code style="font-family:monospace;background:${theme.tint};padding:2px 4px;color:${theme.accent};">${escapeHtml(tokens[index].content)}</code>`;
+  return renderer;
+}
+
+const decorativeRenderers = Object.fromEntries(Object.entries(DECORATIVE_THEMES)
+  .map(([name, theme]) => [name, decorativeMarkdown(theme)]));
+
 function invalid(message) {
   throw new PublisherProtocolError("invalid-content", message);
 }
@@ -137,6 +232,11 @@ export function renderArticleHtml(manifest, uploadedUrls) {
 export function renderWechatArticleHtml(manifest, uploadedUrls) {
   if (manifest.articleTheme === "editorial") {
     return `<section style="font-size:16px;line-height:1.9;letter-spacing:0.2px;color:#273b35;background:#fffdf8;padding:18px 16px;word-break:break-word;">${renderArticle(manifest, uploadedUrls, editorialMarkdown)}</section>`;
+  }
+  const decorativeTheme = Object.hasOwn(DECORATIVE_THEMES, manifest.articleTheme)
+    ? DECORATIVE_THEMES[manifest.articleTheme] : null;
+  if (decorativeTheme) {
+    return `<section style="${decorativeTheme.section}">${renderArticle(manifest, uploadedUrls, decorativeRenderers[manifest.articleTheme])}</section>`;
   }
   return `<section style="font-size:16px;line-height:1.8;color:#252b32;word-break:break-word;">${renderArticle(manifest, uploadedUrls, wechatMarkdown)}</section>`;
 }

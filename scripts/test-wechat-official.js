@@ -62,6 +62,11 @@ const { pathToFileURL } = require("url");
     assert.match(themedArticle.content, /<p style="margin:0 0 24px;padding:14px 16px;border-left:4px solid #2b7468;/u);
     assert.match(themedArticle.content, /<h2 style="font-size:20px;[^"]*border-left:4px solid #2b7468;/u);
     requests.length = 0;
+    await client.submit(credentials, submission, { ...themedManifest, articleTheme: "lapis" }, themedManifest.body);
+    const lapisArticle = JSON.parse(requests.find(item => item.pathname === "/cgi-bin/draft/add").options.body).articles[0];
+    assert.match(lapisArticle.content, /<h2 style="font-size:20px;[^"]*color:#ffffff;[^"]*background:#4870ac;/u);
+    assert.match(lapisArticle.content, /https:\/\/mmbiz\.qpic\.cn\/image\.png/u);
+    requests.length = 0;
     const published = await client.submit(credentials, { ...submission, mode: "publish" }, manifest, manifest.body);
     assert.strictEqual(published.status, "success");
     assert.deepStrictEqual(requests.map(item => item.pathname), [

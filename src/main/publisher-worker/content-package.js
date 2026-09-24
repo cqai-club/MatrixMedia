@@ -73,7 +73,7 @@ export function readContentPackage(directory, expectedId, revision, expectedType
   if (!manifest || manifest.id !== expectedId || manifest.revision !== revision || manifest.contentType !== expectedType) invalid("内容包修订不匹配");
   if (!["article", "image-note"].includes(expectedType) || typeof manifest.title !== "string" || manifest.title.length > 120) invalid("内容标题无效");
   if (Object.hasOwn(manifest, "articleTheme")
-    && (expectedType !== "article" || !["classic", "editorial"].includes(manifest.articleTheme))) invalid("文章排版主题无效");
+    && (expectedType !== "article" || !["classic", "editorial", "orangeheart", "lapis", "purple"].includes(manifest.articleTheme))) invalid("文章排版主题无效");
   if (typeof manifest.body !== "string" || Buffer.byteLength(manifest.body, "utf8") > 2 * 1024 * 1024) invalid("正文无效");
   if (!Array.isArray(manifest.tags) || manifest.tags.length > 8 || manifest.tags.some(tag => typeof tag !== "string" || tag.length > 100)) invalid("标签无效");
   if (!Array.isArray(manifest.assets) || manifest.assets.length > 20) invalid("素材数量无效");
