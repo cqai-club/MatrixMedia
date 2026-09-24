@@ -1,5 +1,8 @@
 function shouldSaveToutiaoDraft({ requestedDraft, hasTagSelector }) {
-  return Boolean(requestedDraft && hasTagSelector);
+  if (requestedDraft && !hasTagSelector) {
+    throw new Error("头条当前视频页面没有保存草稿入口，已停止提交；未点击发布");
+  }
+  return Boolean(requestedDraft);
 }
 
 function getToutiaoCoverMode({ hasTagSelector }) {

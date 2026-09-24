@@ -757,7 +757,7 @@ export default async function (page, data, window, event) {
       requestedDraft: isDraftMode,
       hasTagSelector,
     });
-    // 草稿：竖屏无标签时不支持保存草稿，直接走发布。
+    // 草稿模式没有保存入口时停止提交，绝不能改点发布按钮。
     await page.waitForTimeout(1000);
     const urlBefore = readPageUrl(page);
     if (shouldSaveDraft) {
