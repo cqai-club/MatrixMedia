@@ -25,9 +25,6 @@ export function validateTargetContent(manifest, account, contentType, capabiliti
   if (contentType === "article" && ["juejin", "blbl"].includes(account.platform) && content.body.includes("ebao-asset://")) {
     throw new PublisherProtocolError("unsupported-content", "掘金和B站专栏暂不支持正文插图，请分开提交");
   }
-  if (contentType === "article" && account.platform === "tt" && String(content.summary || "").trim()) {
-    throw new PublisherProtocolError("unsupported-content", "头条当前文章编辑页没有可写的独立摘要，请清空头条版本的摘要后再提交");
-  }
   const capability = capabilities.find(item => item.platform === account.platform);
   const required = capability?.requiredFields[contentType] || [];
   const titleLimit = capability?.maxTitleLength[contentType];

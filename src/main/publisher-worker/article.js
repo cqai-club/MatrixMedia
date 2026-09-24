@@ -201,7 +201,7 @@ function runWebArticle(account, submission, manifest, url) {
     data: {
       title: manifest.title,
       content: withDisclosure(manifest.body, manifest.creativeStatement),
-      summary: manifest.summary || "",
+      ...(account.platform === "tt" ? {} : { summary: manifest.summary || "" }),
       // 头条和百家号文章标签写入未验收；不传给页面适配器，草稿标签供其他平台使用。
       images: manifest.assets.filter(asset => usedImages.has(asset.id)).map(asset => ({
         id: asset.id, mime: asset.mime, path: path.join(submission.snapshotDirectory, "assets", asset.id),

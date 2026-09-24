@@ -33,7 +33,7 @@ const { build } = require("esbuild");
     });
     const adapters = require(outfile);
     const manifest = {
-      title: "测试文章", body: "正文", summary: "", tags: ["AI", "科技"],
+      title: "测试文章", body: "正文", summary: "主稿摘要", tags: ["AI", "科技"],
       creativeStatement: "none", assets: [], platformFields: {},
     };
     const submission = { snapshotDirectory: temporary, mode: "draft" };
@@ -50,10 +50,14 @@ const { build } = require("esbuild");
     }
     const [toutiao, baijiahao, juejin, bilibili] = globalThis.__articleTagPayloads;
     assert.strictEqual(Object.hasOwn(toutiao.data, "tags"), false);
+    assert.strictEqual(Object.hasOwn(toutiao.data, "summary"), false);
+    assert.strictEqual(toutiao.data.content, "正文");
     assert.strictEqual(Object.hasOwn(baijiahao.data, "tags"), false);
+    assert.strictEqual(baijiahao.data.summary, "主稿摘要");
     assert.strictEqual(juejin.data.tags, "AI 科技");
     assert.deepStrictEqual(bilibili.data.tags, ["AI", "科技"]);
     assert.deepStrictEqual(manifest.tags, ["AI", "科技"]);
+    assert.strictEqual(manifest.summary, "主稿摘要");
   } finally {
     delete globalThis.__articleTagPayloads;
     fs.rmSync(temporary, { recursive: true, force: true });

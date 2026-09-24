@@ -317,8 +317,9 @@ const root = path.join(__dirname, "..");
     const toutiaoTarget = targets.validateTargetContent({ ...manifest, summary: "主稿摘要" },
       { platform: "tt", displayName: "头条" }, "article", advertised, null);
     assert.strictEqual(toutiaoTarget.summary, "");
-    assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: { tt: { summary: "独立摘要" } } },
-      { platform: "tt", displayName: "头条" }, "article", advertised, null), /清空头条版本的摘要/u);
+    const toutiaoWithSummary = targets.validateTargetContent({ ...manifest, platformVariants: { tt: { summary: "独立摘要" } } },
+      { platform: "tt", displayName: "头条" }, "article", advertised, null);
+    assert.strictEqual(toutiaoWithSummary.summary, "独立摘要");
     assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: { wxmp: { title: "" } } },
       { platform: "wxmp", displayName: "公众号" }, "article", advertised, { validate: () => {} }), /标题不能为空/u);
     assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: { tt: { assetOrder: [secondAssetId] } } },
