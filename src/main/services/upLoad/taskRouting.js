@@ -14,13 +14,14 @@ export function publisherHandlerKey(data) {
     return ARTICLE[data.pt] ? `article:${ARTICLE[data.pt]}:${mode}` : "";
   }
   if (data.textType === "image-note") {
-    return data.pt === "小红书" ? `image-note:xhs:${mode}` : "";
+    const platform = { 小红书: "xhs", 头条: "tt", 快手: "ks", 抖音: "dy" }[data.pt];
+    return platform ? `image-note:${platform}:${mode}` : "";
   }
   return !data.textType || data.textType === "local" ? `legacy:${data.pt}` : "";
 }
 
-/** 头条文章草稿在账号后台可见窗口能保存，但隐藏自动窗口的首个请求被拒绝。 */
+/** 头条草稿使用可见窗口供用户核查，微头条图文沿用相同规则。 */
 export function usesManualToutiaoArticleWindow(data) {
-  return data.publisherWorker === true && data.textType === "article"
+  return data.publisherWorker === true && ["article", "image-note"].includes(data.textType)
     && data.pt === "头条" && data.publishToDraft === true;
 }

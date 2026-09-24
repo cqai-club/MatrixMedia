@@ -5,6 +5,7 @@ import os from "os";
 import path from "path";
 import ptConfig from "../config/ptConfig";
 import { cancelPuppeteerTasks, runPuppeteerTask } from "../services/puppeteerFile";
+import { afterPublishWindowClosed, hasOpenPublishWindow } from "../services/publishWindowRegistry.js";
 import { PublisherProtocolError } from "./protocol.js";
 import { articleImageIds } from "./article-content.js";
 import { publisherUserAgent } from "./userAgent.js";
@@ -110,9 +111,42 @@ export function runJuejinArticle(account, submission, manifest) {
 
 export async function runXhsImageNote(account, submission, manifest) {
   if (account.platform !== "xhs") throw new PublisherProtocolError("unsupported-platform", "图文平台适配器尚未开放");
+  return runImageNoteTask(account, submission, manifest,
+    "https://creator.xiaohongshu.com/publish/publish?from=menu&target=image");
+}
+
+const IMAGE_NOTE_URLS = {
+  dy: "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
+  ks: "https://cp.kuaishou.com/article/publish/video?tabType=2",
+  tt: "https://mp.toutiao.com/profile_v4/weitoutiao/publish",
+};
+
+export function runToutiaoImageNote(account, submission, manifest) {
+  if (account.platform !== "tt" || submission.mode !== "draft") {
+    throw new PublisherProtocolError("unsupported-platform", "头条微头条暂只支持转存草稿");
+  }
+  return runImageNoteTask(account, submission, manifest, IMAGE_NOTE_URLS.tt);
+}
+
+export function runKuaishouImageNote(account, submission, manifest) {
+  if (account.platform !== "ks" || submission.mode !== "draft") {
+    throw new PublisherProtocolError("unsupported-platform", "快手图文暂只支持转存草稿");
+  }
+  return runImageNoteTask(account, submission, manifest, IMAGE_NOTE_URLS.ks);
+}
+
+export function runDouyinImageNote(account, submission, manifest) {
+  if (account.platform !== "dy" || submission.mode !== "draft") {
+    throw new PublisherProtocolError("unsupported-platform", "抖音图文暂只支持转存草稿");
+  }
+  return runImageNoteTask(account, submission, manifest, IMAGE_NOTE_URLS.dy);
+}
+
+async function runImageNoteTask(account, submission, manifest, url) {
   // 快照使用无扩展名 UUID；浏览器文件输入框需要扩展名识别图片 MIME。
   // 只给上传副本补后缀，保留不可变快照以及用户选择的图片顺序。
-  const uploadDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ebao-xhs-images-"));
+  const uploadDirectory = fs.mkdtempSync(path.join(os.tmpdir(), `ebao-${account.platform}-images-`));
+  let retainedForReview = false;
   try {
     const suffixes = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
     const imagePaths = manifest.assets.map(asset => {
@@ -122,13 +156,22 @@ export async function runXhsImageNote(account, submission, manifest) {
       fs.copyFileSync(path.join(submission.snapshotDirectory, "assets", asset.id), destination, fs.constants.COPYFILE_EXCL);
       return destination;
     });
-    return await runXhsImageNoteTask(account, submission, manifest, imagePaths);
+    const result = await runImageNoteBrowserTask(account, submission, manifest, imagePaths, url);
+    if (result.status === "unknown" && hasOpenPublishWindow(account.partition)) {
+      // The browser may still be finishing an upload while the user checks an
+      // uncertain result. Keep its file-input paths valid until that window closes.
+      afterPublishWindowClosed(account.partition, () => {
+        fs.rmSync(uploadDirectory, { recursive: true, force: true });
+      });
+      retainedForReview = true;
+    }
+    return result;
   } finally {
-    fs.rmSync(uploadDirectory, { recursive: true, force: true });
+    if (!retainedForReview) fs.rmSync(uploadDirectory, { recursive: true, force: true });
   }
 }
 
-function runXhsImageNoteTask(account, submission, manifest, imagePaths) {
+function runImageNoteBrowserTask(account, submission, manifest, imagePaths, url) {
   const cfg = ptConfig[account.pt];
   const payload = {
     taskId: Date.now() + Math.random(),
@@ -141,11 +184,11 @@ function runXhsImageNoteTask(account, submission, manifest, imagePaths) {
       tags: manifest.tags,
       creativeStatement: manifest.creativeStatement,
     },
-    url: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=image",
+    url,
     show: false,
     mmCliSuppressWindow: true,
     closeWindowAfterPublish: true,
-    useragent: cfg.useragent,
+    useragent: publisherUserAgent(account.pt, cfg.useragent),
     partition: account.partition,
     phone: account.id,
     pt: account.pt,

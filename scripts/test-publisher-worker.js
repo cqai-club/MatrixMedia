@@ -56,19 +56,28 @@ const root = path.join(__dirname, "..");
   assert.strictEqual(Object.hasOwn(advertised.find(item => item.platform === "juejin"), "articleThemeVersion"), false);
   for (const platform of ["tt", "bjh"]) {
     const entry = advertised.find(item => item.platform === platform);
-    assert.deepStrictEqual(entry.contentTypes, ["video", "article"]);
+    assert.deepStrictEqual(entry.contentTypes, platform === "tt" ? ["video", "image-note", "article"] : ["video", "article"]);
     assert.deepStrictEqual(entry.modes.article, ["publish", "draft"]);
     assert.strictEqual(capabilities.accepts(advertised, platform, "article", "draft"), true);
     assert.strictEqual(capabilities.accepts(advertised, platform, "article", "publish"), true);
   }
   assert.strictEqual(capabilities.accepts(advertised, "dy", "article", "draft"), false);
+  assert.strictEqual(capabilities.accepts(advertised, "tt", "image-note", "draft"), true);
+  assert.strictEqual(capabilities.accepts(advertised, "tt", "image-note", "publish"), false);
+  assert.strictEqual(advertised.find(item => item.platform === "tt").maxAssets["image-note"], 9);
+  assert.strictEqual(capabilities.accepts(advertised, "ks", "image-note", "draft"), false);
+  assert.strictEqual(capabilities.accepts(advertised, "dy", "image-note", "draft"), false);
   assert.strictEqual(capabilities.accepts(advertised, "bjh", "image-note", "publish"), false);
   assert.strictEqual(routing.publisherHandlerKey({ pt: "头条", textType: "article", publishToDraft: true }), "article:tt:draft");
   assert.strictEqual(routing.publisherHandlerKey({ pt: "百家号", textType: "article" }), "article:bjh:publish");
   assert.strictEqual(routing.publisherHandlerKey({ pt: "头条", textType: "local" }), "legacy:头条");
   assert.strictEqual(routing.publisherHandlerKey({ pt: "抖音", textType: "article" }), "");
   assert.strictEqual(routing.publisherHandlerKey({ pt: "小红书", textType: "image-note" }), "image-note:xhs:publish");
+  assert.strictEqual(routing.publisherHandlerKey({ pt: "头条", textType: "image-note", publishToDraft: true }), "image-note:tt:draft");
+  assert.strictEqual(routing.publisherHandlerKey({ pt: "快手", textType: "image-note", publishToDraft: true }), "image-note:ks:draft");
+  assert.strictEqual(routing.publisherHandlerKey({ pt: "抖音", textType: "image-note", publishToDraft: true }), "image-note:dy:draft");
   assert.strictEqual(routing.usesManualToutiaoArticleWindow({ publisherWorker: true, pt: "头条", textType: "article", publishToDraft: true }), true);
+  assert.strictEqual(routing.usesManualToutiaoArticleWindow({ publisherWorker: true, pt: "头条", textType: "image-note", publishToDraft: true }), true);
   assert.strictEqual(routing.usesManualToutiaoArticleWindow({ publisherWorker: true, pt: "头条", textType: "article", publishToDraft: false }), false);
   assert.strictEqual(routing.usesManualToutiaoArticleWindow({ publisherWorker: true, pt: "头条", textType: "local", publishToDraft: true }), false);
   assert.strictEqual(routing.usesManualToutiaoArticleWindow({ publisherWorker: true, pt: "百家号", textType: "article", publishToDraft: true }), false);
@@ -337,6 +346,15 @@ const root = path.join(__dirname, "..");
     assert.throws(() => targets.validateTargetContent({ ...manifest, contentType: "image-note", title: "图文", body: "正文", coverAssetId: null,
       assets: Array.from({ length: 19 }, (_, index) => ({ id: String(index), mime: "image/png" })) },
     { platform: "xhs", displayName: "小红书" }, "image-note", advertised, null), /素材不能超过18个/u);
+    const ttImageNote = { ...manifest, contentType: "image-note", title: "微头条", body: "图文正文",
+      coverAssetId: null, platformVariants: {}, creativeStatement: "none" };
+    assert.strictEqual(targets.validateTargetContent(ttImageNote,
+      { platform: "tt", displayName: "头条" }, "image-note", advertised, null).body, "图文正文");
+    assert.throws(() => targets.validateTargetContent({ ...ttImageNote, creativeStatement: "ai_generated" },
+      { platform: "tt", displayName: "头条" }, "image-note", advertised, null), /内容声明尚未适配/u);
+    assert.throws(() => targets.validateTargetContent({ ...ttImageNote,
+      assets: Array.from({ length: 10 }, (_, index) => ({ id: String(index), mime: "image/png" })) },
+    { platform: "tt", displayName: "头条" }, "image-note", advertised, null), /素材不能超过9个/u);
     fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...manifest, platformVariants: { wxmp: { assetOrder: ["99999999-9999-4999-8999-999999999999"] } } }));
     assert.throws(() => packages.readContentPackage(source, contentId, 3, "article"), /平台图片顺序无效/u);
     fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...manifest, platformVariants: { wxmp: { coverAssetId: "99999999-9999-4999-8999-999999999999" } } }));

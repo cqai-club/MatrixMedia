@@ -22,6 +22,9 @@ import {
 import { resolveChromePath } from "./chromeConfig.js";
 import xhsChromeHandler from "./upLoad/xhsChrome.js";
 import xhsImageNoteHandler from "./upLoad/xhsImageNote.js";
+import ttImageNoteHandler from "./upLoad/ttImageNote.js";
+import ksImageNoteHandler from "./upLoad/ksImageNote.js";
+import dyImageNoteHandler from "./upLoad/dyImageNote.js";
 import blblArticleHandler from "./upLoad/blblArticle.js";
 import ttArticleHandler from "./upLoad/ttArticle.js";
 import bjhArticleHandler from "./upLoad/bjhArticle.js";
@@ -180,6 +183,29 @@ function isExpectedPublishUrl(data, currentUrl) {
       const current = new URL(currentUrl);
       return current.origin === "https://creator.xiaohongshu.com"
         && current.pathname === "/publish/publish";
+    } catch { return false; }
+  }
+  if (data?.pt === "头条" && data?.textType === "image-note") {
+    try {
+      const current = new URL(currentUrl);
+      return current.origin === "https://mp.toutiao.com"
+        && current.pathname === "/profile_v4/weitoutiao/publish";
+    } catch { return false; }
+  }
+  if (data?.pt === "快手" && data?.textType === "image-note") {
+    try {
+      const current = new URL(currentUrl);
+      return current.origin === "https://cp.kuaishou.com"
+        && current.pathname === "/article/publish/video"
+        && current.searchParams.get("tabType") === "2";
+    } catch { return false; }
+  }
+  if (data?.pt === "抖音" && data?.textType === "image-note") {
+    try {
+      const current = new URL(currentUrl);
+      return current.origin === "https://creator.douyin.com"
+        && current.pathname === "/creator-micro/content/upload"
+        && current.searchParams.get("default-tab") === "3";
     } catch { return false; }
   }
   if (data?.pt === "哔哩哔哩" && data?.textType === "article") {
@@ -994,6 +1020,12 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
                     ? Type["掘金"]
                     : key === "image-note:xhs:draft" || key === "image-note:xhs:publish"
                       ? xhsImageNoteHandler
+                    : key === "image-note:tt:draft"
+                      ? ttImageNoteHandler
+                    : key === "image-note:ks:draft"
+                      ? ksImageNoteHandler
+                    : key === "image-note:dy:draft"
+                      ? dyImageNoteHandler
                       : key.startsWith("legacy:") ? Type[data.pt] : undefined;
             if (typeof action !== "function") {
               // pt 没注册处理器属于配置/调用方错误，重试 5 次也变不出来 handler，

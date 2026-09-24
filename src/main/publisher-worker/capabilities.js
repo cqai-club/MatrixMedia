@@ -7,6 +7,7 @@ const CONTENT_ADAPTERS = {
   "juejin:article": { requiredFields: ["category"], maxAssets: 1 },
   "blbl:article": { requiredFields: [], maxAssets: 1 },
   "xhs:image-note": { requiredFields: [], maxAssets: 18, maxTitleLength: 20 },
+  "tt:image-note": { requiredFields: [], maxAssets: 9, modes: ["draft"] },
   "wxmp:article": { requiredFields: [], maxAssets: 20, maxTitleLength: 64 },
 };
 const ARTICLE_MODES = {
@@ -27,7 +28,7 @@ export function platformCapabilities() {
       const [target, type] = key.split(":");
       if (target !== platform) continue;
       types.push(type);
-      modes[type] = ["publish", "draft"];
+      modes[type] = settings.modes || ["publish", "draft"];
       requiredFields[type] = settings.requiredFields;
       maxAssets[type] = settings.maxAssets;
       if (settings.maxTitleLength) maxTitleLength[type] = settings.maxTitleLength;

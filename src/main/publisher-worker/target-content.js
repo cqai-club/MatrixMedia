@@ -48,5 +48,8 @@ export function validateTargetContent(manifest, account, contentType, capabiliti
     && !["none", "ai_generated", "fiction", "marketing"].includes(content.creativeStatement)) {
     throw new PublisherProtocolError("unsupported-content", "小红书暂不支持该内容声明");
   }
+  if (contentType === "image-note" && account.platform === "tt" && content.creativeStatement !== "none") {
+    throw new PublisherProtocolError("unsupported-content", "头条微头条图文的内容声明尚未适配，请先选择无声明");
+  }
   return content;
 }

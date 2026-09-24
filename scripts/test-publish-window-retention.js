@@ -43,7 +43,7 @@ const stubs = new Map([
 await build({
   stdin: {
     contents: `
-      export { registerPublishWindow, hasOpenPublishWindow, hasAnyOpenPublishWindow,
+      export { registerPublishWindow, hasOpenPublishWindow, hasAnyOpenPublishWindow, afterPublishWindowClosed,
         TOUTIAO_DRAFT_WINDOW_NOTICE } from "./src/main/services/publishWindowRegistry.js";
       export { replyPublishFailure, replyPublishOutcome } from "./src/main/services/upLoad/publishOutcome.js";
       export { PublisherAccounts } from "./src/main/publisher-worker/accounts.js";
@@ -102,6 +102,7 @@ const draft = {
   publisherWorker: true, pt: "头条", textType: "article",
   publishToDraft: true, closeWindowAfterPublish: true,
 };
+const imageDraft = { ...draft, textType: "image-note" };
 const store = {
   account(id) {
     return id === "a" ? { id, partition: partitionA, platform: "tt", pt: "头条" }
@@ -130,6 +131,13 @@ async function waitForWindow(previousCount) {
   assert.strictEqual(tools.hasOpenPublishWindow(partitionA), true);
   early.close();
   assert.strictEqual(tools.hasOpenPublishWindow(partitionA), false);
+  const retainedCopies = new FakeWindow();
+  tools.registerPublishWindow(partitionA, retainedCopies);
+  let copiesCleaned = 0;
+  tools.afterPublishWindowClosed(partitionA, () => { copiesCleaned++; });
+  assert.strictEqual(copiesCleaned, 0);
+  retainedCopies.close();
+  assert.strictEqual(copiesCleaned, 1);
   const legacyWithoutPartition = new FakeWindow();
   tools.registerPublishWindow("", legacyWithoutPartition);
   assert.strictEqual(tools.hasActivePublishTasks(), true);
@@ -157,6 +165,18 @@ async function waitForWindow(previousCount) {
   failedWindow.close();
   assert.doesNotThrow(() => accounts.assertNoOpenWindow("a"));
   assert.doesNotThrow(() => accounts.assertIdle("a"));
+
+  const imageWindow = new FakeWindow();
+  tools.registerPublishWindow(partitionA, imageWindow);
+  const imageReplies = [];
+  await tools.replyPublishFailure({
+    page: null, data: imageDraft, window: imageWindow,
+    event: { reply: (_channel, payload) => imageReplies.push(payload) },
+    message: "微头条草稿未确认",
+  });
+  assert.strictEqual(imageWindow.isDestroyed(), false);
+  assert.match(imageReplies[0].message, /窗口已保留/u);
+  imageWindow.close();
 
   const serviceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ebao-window-retention-"));
   try {

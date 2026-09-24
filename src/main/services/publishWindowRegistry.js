@@ -3,10 +3,11 @@
 // 发布页与账号管理窗口共享同一个持久化 session。任务结束后仍供人工核查的
 // 发布窗口也必须占用该账号，直到用户亲自关闭窗口。
 const windowsByPartition = new Map();
+const closeCallbacksByPartition = new Map();
 
 export function shouldKeepToutiaoArticleDraftWindow(data) {
   return data?.publisherWorker === true && data.pt === "头条"
-    && data.textType === "article" && data.publishToDraft === true;
+    && ["article", "image-note"].includes(data.textType) && data.publishToDraft === true;
 }
 
 export const TOUTIAO_DRAFT_WINDOW_NOTICE = "头条草稿窗口已保留，可核查后手动关闭；关闭前该账号不能再次提交。";
@@ -28,7 +29,29 @@ export function unregisterPublishWindow(partition, win) {
   const windows = windowsByPartition.get(partition);
   if (!windows) return;
   windows.delete(win);
-  if (windows.size === 0) windowsByPartition.delete(partition);
+  if (windows.size === 0) {
+    windowsByPartition.delete(partition);
+    const callbacks = closeCallbacksByPartition.get(partition);
+    closeCallbacksByPartition.delete(partition);
+    for (const callback of callbacks || []) {
+      try { callback(); }
+      catch (error) { console.warn("发布窗口关闭后的清理失败:", error?.message || error); }
+    }
+  }
+}
+
+/** Keep temporary upload copies while a platform window needs manual review. */
+export function afterPublishWindowClosed(partition, callback) {
+  if (!hasOpenPublishWindow(partition)) {
+    callback();
+    return;
+  }
+  let callbacks = closeCallbacksByPartition.get(partition);
+  if (!callbacks) {
+    callbacks = new Set();
+    closeCallbacksByPartition.set(partition, callbacks);
+  }
+  callbacks.add(callback);
 }
 
 function hasLiveWindow(partition) {

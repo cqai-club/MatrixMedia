@@ -11,7 +11,11 @@ import { PublisherStore, publicSubmission } from "./store.js";
 import { PublisherAccounts } from "./accounts.js";
 import { accepts, platformCapabilities } from "./capabilities.js";
 import { captureContentPackage, projectContentForPlatform, readContentPackage, removeSubmissionSnapshot } from "./content-package.js";
-import { runBilibiliArticle, runJuejinArticle, runXhsImageNote, runToutiaoArticle, runBaijiahaoArticle, runWechatOfficialArticle } from "./article.js";
+import {
+  runBilibiliArticle, runJuejinArticle, runXhsImageNote, runToutiaoArticle,
+  runToutiaoImageNote, runKuaishouImageNote, runDouyinImageNote,
+  runBaijiahaoArticle, runWechatOfficialArticle,
+} from "./article.js";
 import { validateTargetContent } from "./target-content.js";
 import { publisherUserAgent } from "./userAgent.js";
 
@@ -238,6 +242,17 @@ export class PublisherWorkerService {
                   this.accounts.wechatCredentials(account.id), this.accounts.wechat));
               } else if (account.platform === "xhs" && submission.contentType === "image-note") {
                 results.push(await runXhsImageNote(account, submission, effective));
+              } else if (account.platform === "tt" && submission.contentType === "image-note") {
+                const outcome = await runToutiaoImageNote(account, submission, effective);
+                if (outcome.exitCode !== 0 && hasOpenPublishWindow(account.partition)
+                  && !String(outcome.message || "").includes(TOUTIAO_DRAFT_WINDOW_NOTICE)) {
+                  outcome.message = `${outcome.message || "头条图文草稿保存未确认"}；${TOUTIAO_DRAFT_WINDOW_NOTICE}`;
+                }
+                results.push(outcome);
+              } else if (account.platform === "ks" && submission.contentType === "image-note") {
+                results.push(await runKuaishouImageNote(account, submission, effective));
+              } else if (account.platform === "dy" && submission.contentType === "image-note") {
+                results.push(await runDouyinImageNote(account, submission, effective));
               } else {
                 results.push({ exitCode: 1, status: "unsupported", message: "平台适配器尚未开放" });
               }
