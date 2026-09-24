@@ -44,7 +44,7 @@ try {
     "fillArticleMetadata", "fillArticleTitle", "findArticleEditor", "finishArticle",
     "observeToutiaoDraftSave", "pasteArticleHtml", "renderUploadedArticle",
   ];
-  const imageExports = ["selectToutiaoCover", "uploadToutiaoImage"];
+  const imageExports = ["selectToutiaoCover", "uploadToutiaoCover", "uploadToutiaoImage"];
   const toutiaoAdapterBuild = {
     entryPoints: [path.join(root, "src/main/services/upLoad/ttArticle.js")],
     bundle: true, platform: "node", format: "cjs",
@@ -100,7 +100,10 @@ try {
             atDashboard = true;
           },
           waitForFunction: async (callback, _options, ...args) => {
-            global.document = atDashboard ? { body: { innerText: listed ? "测试标题" : "暂无草稿" } } : {};
+            global.document = atDashboard ? { querySelectorAll: () => [{
+              textContent: listed === true ? "测试标题" : listed || "暂无草稿",
+              getBoundingClientRect: () => ({ width: 20 }), children: [],
+            }] } : {};
             const result = callback(...args);
             if (!result) throw new Error("not saved");
           },
@@ -158,6 +161,65 @@ try {
       assert.strictEqual((await save.waitForFullBodySave(1)).confirmed, true);
       assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList(true), "测试标题", 1, save)).confirmed, true);
       assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList(false), "测试标题", 1, save)).confirmed, false);
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList("测试标题加后缀"), "测试标题", 1, save)).confirmed, false);
+      const reopenedDraft = ({ body = "开头文字不可丢失的中段结尾文字",
+        cover = "https://example.com/cover.png", titleCount = 1 } = {}) => {
+        const editUrl = "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1";
+        const titleNode = () => ({
+          textContent: "测试标题", children: [],
+          getBoundingClientRect: () => ({ width: 120, height: 25 }),
+        });
+        const editPage = {
+          waitForSelector: async () => {},
+          evaluate: async () => "[data-ebao-article-editor='true']",
+          waitForFunction: async (callback, _options, ...args) => {
+            const coverArea = {
+              getBoundingClientRect: () => ({ width: 150, height: 90 }),
+              querySelectorAll: () => cover ? [{
+                complete: true, naturalWidth: 800, currentSrc: cover, src: cover,
+                getAttribute: () => cover,
+              }] : [],
+            };
+            global.document = { querySelector: selector => selector === args[0]
+              ? { value: "测试标题" }
+              : selector === args[1] ? { textContent: body }
+                : selector === ".article-cover-images-wrap" ? coverArea : null };
+            global.location = { href: editUrl };
+            if (!callback(...args)) throw new Error("reopened draft mismatch");
+          },
+          close: async () => {},
+        };
+        const target = { url: () => editUrl, page: async () => editPage };
+        let targets = [];
+        const browser = {
+          targets: () => targets,
+          waitForTarget: async predicate => {
+            targets = [target];
+            assert.strictEqual(predicate(target), true);
+            return target;
+          },
+        };
+        return {
+          goto: async () => {},
+          waitForFunction: async (callback, _options, ...args) => {
+            global.document = { querySelectorAll: () => Array.from({ length: titleCount }, titleNode) };
+            if (!callback(...args)) throw new Error("draft title mismatch");
+          },
+          evaluate: async () => ({ marked: true, editHref: editUrl }),
+          browser: () => browser,
+          click: async selector => { assert.strictEqual(selector, "[data-ebao-draft-edit='true']"); },
+        };
+      };
+      const reopenOptions = { expectedHtml: "<p>开头文字</p><p>不可丢失的中段</p><p>结尾文字</p>",
+        coverUrl: "https://example.com/cover.png" };
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(reopenedDraft(), "测试标题", 1,
+        save, reopenOptions)).confirmed, true);
+      assert.match((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ body: "开头文字结尾文字" }),
+        "测试标题", 1, save, reopenOptions)).reason, /未确认完整正文/u);
+      assert.match((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ cover: "" }),
+        "测试标题", 1, save, reopenOptions)).reason, /未确认封面/u);
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ titleCount: 2 }),
+        "测试标题", 1, save, reopenOptions)).confirmed, false);
       save.stop();
       assert.strictEqual(responses.listenerCount("response"), 0);
       const initialFailureResponses = new EventEmitter();
@@ -261,46 +323,111 @@ try {
       const missingIdResponses = new EventEmitter();
       const missingId = tools.observeToutiaoDraftSave(missingIdResponses);
       missingId.expect("测试标题", "完整测试正文");
-      missingIdResponses.emit("response", saveResponse("", 0));
-      await new Promise(resolve => setImmediate(resolve));
       missingIdResponses.emit("response", saveResponse("<p>完整测试正文</p>", 0));
       await new Promise(resolve => setImmediate(resolve));
-      assert.match((await missingId.waitForFullBodySave(1)).reason, /未携带草稿标识/u);
+      assert.strictEqual((await missingId.waitForFullBodySave(1)).confirmed, true);
       missingId.stop();
 
+      const partialEvents = new EventEmitter();
+      const partialSave = tools.observeToutiaoDraftSave(partialEvents);
+      partialSave.expect("测试标题", "完整测试正文，开头已录入。\n\n但这一段必须出现在最后保存的请求里。");
+      partialEvents.emit("response", saveResponse("<p>完整测试正文，开头已录入。</p>", 0));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.match((await partialSave.waitForFullBodySave(1)).reason, /正文不完整或与待发布正文不一致/u);
+      partialEvents.emit("response", saveResponse("<p>完整测试正文，开头已录入。</p><p>但这一段必须出现在最后保存的请求里。</p>", 0));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual((await partialSave.waitForFullBodySave(1)).confirmed, true);
+      partialSave.stop();
+
+      const missingMiddleEvents = new EventEmitter();
+      const missingMiddle = tools.observeToutiaoDraftSave(missingMiddleEvents);
+      const completeHtml = "<p>开头文字</p><p>不可丢失的中段</p><p>结尾文字</p>";
+      missingMiddle.expect("测试标题", "开头文字\n不可丢失的中段\n结尾文字", completeHtml);
+      missingMiddleEvents.emit("response", saveResponse("<p>开头文字</p><p>结尾文字</p>", 0));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.match((await missingMiddle.waitForFullBodySave(1)).reason, /正文不完整或与待发布正文不一致/u);
+      missingMiddleEvents.emit("response", saveResponse(completeHtml, 0));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual((await missingMiddle.waitForFullBodySave(1)).confirmed, true);
+      missingMiddle.stop();
+
       const sequence = [];
-      let releaseInitial;
-      const initialPending = new Promise(resolve => { releaseInitial = resolve; });
-      const observer = { expect: () => sequence.push("expect"), stop: () => sequence.push("stop") };
+      const saveOptions = [];
+      const observer = {
+        expect: (_title, _content, html) => sequence.push(html ? `expect-html:${html}` : "expect"),
+        waitForFullBodySave: async () => { sequence.push("body-saved"); return { confirmed: true }; },
+        stop: () => sequence.push("stop"),
+      };
       global.__ttAdapterMocks = {
         observeToutiaoDraftSave: () => observer,
         findArticleEditor: async () => "#editor",
         fillArticleTitle: async () => { sequence.push("title"); },
-        confirmToutiaoInitialDraftAutosave: async () => { sequence.push("wait-initial"); return initialPending; },
         renderUploadedArticle: () => "<p>完整测试正文</p>",
-        pasteArticleHtml: async () => { sequence.push("body"); },
-        confirmToutiaoBodyAccepted: async () => {},
+        pasteArticleHtml: async (_page, _editor, _html, _plain, _context, _images, options) => {
+          assert.strictEqual(options.verifyWholeBody, true);
+          sequence.push("body");
+        },
+        confirmToutiaoBodyAccepted: async () => { sequence.push("word-count"); },
         fillArticleMetadata: async () => {},
         currentUrl: () => before,
-        confirmToutiaoDraftAutosave: async () => ({ confirmed: true }),
+        confirmToutiaoDraftAutosave: async (_page, _title, _timeout, _observer, options) => {
+          saveOptions.push(options);
+          return { confirmed: true };
+        },
+        uploadToutiaoImage: async () => { sequence.push("inline-upload"); return "https://example.com/cover.png"; },
+        uploadToutiaoCover: async (_page, _editor, _asset, waitForSave) => {
+          assert.strictEqual(waitForSave, true);
+          sequence.push("cover-upload");
+          return "https://example.com/cover.png";
+        },
+        selectToutiaoCover: async (_page, _url, waitForSave) => {
+          assert.strictEqual(waitForSave, true);
+          sequence.push("cover-select");
+        },
         finishArticle: async () => { sequence.push("finished"); },
         failArticle: async () => { sequence.push("failed"); },
       };
-      const draftPage = { click: async selector => {
-        assert.strictEqual(selector, "#editor");
-        sequence.push("focus-empty-body");
-      } };
+      const draftPage = {};
       const draftData = { publishToDraft: true, data: { title: "测试标题", content: "完整测试正文", images: [] } };
-      const draftRun = publishToutiaoArticle(draftPage, draftData, null, null);
-      await new Promise(resolve => setImmediate(resolve));
-      assert.deepStrictEqual(sequence, ["expect", "title", "focus-empty-body", "wait-initial"]);
-      releaseInitial({ confirmed: true });
-      await draftRun;
-      assert.deepStrictEqual(sequence, ["expect", "title", "focus-empty-body", "wait-initial", "body", "finished", "stop"]);
-      sequence.length = 0;
-      global.__ttAdapterMocks.confirmToutiaoInitialDraftAutosave = async () => ({ confirmed: false, reason: "初始草稿未确认" });
       await publishToutiaoArticle(draftPage, draftData, null, null);
-      assert.deepStrictEqual(sequence, ["expect", "title", "focus-empty-body", "failed", "stop"]);
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "finished", "stop"]);
+      assert.deepStrictEqual(saveOptions.at(-1), { expectedHtml: "<p>完整测试正文</p>", coverUrl: "" });
+      sequence.length = 0;
+      global.__ttAdapterMocks.confirmToutiaoDraftAutosave = async () => ({ confirmed: false, reason: "完整正文保存未确认" });
+      await publishToutiaoArticle(draftPage, draftData, null, null);
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "failed", "stop"]);
+      sequence.length = 0;
+      global.__ttAdapterMocks.confirmToutiaoDraftAutosave = async (_page, _title, _timeout, _observer, options) => {
+        saveOptions.push(options);
+        return { confirmed: true };
+      };
+      await publishToutiaoArticle(draftPage, {
+        ...draftData, data: { ...draftData.data, coverPath: "/tmp/cover.png", coverMime: "image/png" },
+      }, null, null);
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "body-saved", "cover-upload", "finished", "stop"]);
+      assert.deepStrictEqual(saveOptions.at(-1), {
+        expectedHtml: "<p>完整测试正文</p>", coverUrl: "https://example.com/cover.png",
+      });
+      sequence.length = 0;
+      global.__ttAdapterMocks.uploadToutiaoCover = async () => {
+        sequence.push("cover-save-unconfirmed");
+        throw new Error("头条封面已显示，但未确认草稿已保存");
+      };
+      await publishToutiaoArticle(draftPage, {
+        ...draftData, data: { ...draftData.data, coverPath: "/tmp/cover.png", coverMime: "image/png" },
+      }, null, null);
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>",
+        "body", "word-count", "body-saved", "cover-save-unconfirmed", "failed", "stop"]);
+      sequence.length = 0;
+      observer.waitForFullBodySave = async () => {
+        sequence.push("body-save-unconfirmed");
+        return { confirmed: false, reason: "正文尚未保存" };
+      };
+      await publishToutiaoArticle(draftPage, {
+        ...draftData, data: { ...draftData.data, coverPath: "/tmp/cover.png", coverMime: "image/png" },
+      }, null, null);
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>",
+        "body", "word-count", "body-save-unconfirmed", "failed", "stop"]);
       delete global.__ttAdapterMocks;
 
       const originalDataTransfer = global.DataTransfer;
@@ -375,6 +502,21 @@ try {
         assert.strictEqual(toutiaoRich.state.inserted, 0);
         assert.strictEqual(toutiaoRich.state.pasteEvents, 1);
 
+        const wholeBody = editorPage({ paste: true });
+        await tools.pasteArticleHtml(wholeBody.page, "#editor", "<p>开头内容</p><p>中间内容</p><p>结尾内容</p>",
+          "开头内容\n中间内容\n结尾内容", wholeBody.page, [], { verifyWholeBody: true });
+        const truncated = editorPage({ paste: true });
+        truncated.page.evaluate = async (callback, ...args) => {
+          global.document = { querySelector: () => ({
+            innerHTML: "<p>开头内容</p><p>中间内容</p>", textContent: "开头内容中间内容", querySelectorAll: () => [], focus: () => {},
+            dispatchEvent: () => {},
+          }), execCommand: () => {} };
+          return callback(...args);
+        };
+        await assert.rejects(tools.pasteArticleHtml(truncated.page, "#editor",
+          "<p>开头内容</p><p>中间内容</p><p>结尾内容</p>", "开头内容\n中间内容\n结尾内容",
+          truncated.page, [], { verifyWholeBody: true }), /文章正文未(?:完整)?写入/u);
+
         const indicator = count => ({
           querySelectorAll: () => count === null ? [] : [{
             closest: () => null,
@@ -407,8 +549,247 @@ try {
       assert.strictEqual(calls[0].publishAbnormal, true);
       assert.strictEqual(calls[0].needsAttention, true);
 
+      const fileInput = (accept, parentElement = null, id = "") => {
+        const attributes = { accept };
+        return {
+          id, parentElement,
+          getAttribute: name => attributes[name] || "",
+          setAttribute: (name, value) => { attributes[name] = value; },
+          removeAttribute: name => { delete attributes[name]; },
+        };
+      };
+      const imagePanelClicks = [];
+      const confirmButton = {
+        textContent: "确定", disabled: true,
+        getAttribute: () => "",
+        getBoundingClientRect: () => ({ width: 80, height: 30 }),
+        click: () => imagePanelClicks.push("panel-confirm"),
+      };
+      const panelAttributes = {};
+      const imagePanel = {
+        textContent: "上传图片 我的素材 本地上传 已上传 0 张图片",
+        parentElement: null,
+        matches: selector => selector.includes("[role='dialog']"),
+        querySelectorAll: selector => selector === "button,[role='button']" ? [confirmButton] : [],
+        getBoundingClientRect: () => ({ width: 400, height: 300 }),
+        setAttribute: (name, value) => { panelAttributes[name] = value; },
+        removeAttribute: name => { delete panelAttributes[name]; },
+      };
+      const localControl = textContent => ({
+        textContent, parentElement: imagePanel,
+        matches: selector => selector.includes("label"),
+        querySelectorAll: () => [],
+        getBoundingClientRect: () => ({ width: 100, height: 30 }),
+      });
+      const localImage = fileInput("", localControl("本地上传 Choose Files"));
+      const unrelatedVideo = fileInput("video/*", localControl("本地上传 Choose Files"));
+      const unrelatedGeneric = fileInput("", imagePanel);
+      let panelInputs = [unrelatedVideo, unrelatedGeneric, localImage];
+      global.document = {
+        body: {},
+        querySelectorAll: selector => selector === "input[type='file']" ? panelInputs
+          : selector === "[data-ebao-toutiao-image-panel]" && panelAttributes["data-ebao-toutiao-image-panel"]
+            ? [imagePanel] : [],
+        querySelector: selector => selector === "[data-ebao-toutiao-image-panel='true']"
+          && panelAttributes["data-ebao-toutiao-image-panel"] ? imagePanel : null,
+      };
+      assert.strictEqual(upload.markToutiaoImageFileInput(), "input[data-ebao-inline-upload='true']");
+      assert.strictEqual(localImage.getAttribute("data-ebao-inline-upload"), "true");
+      assert.strictEqual(unrelatedGeneric.getAttribute("data-ebao-inline-upload"), "");
+      assert.strictEqual(unrelatedVideo.getAttribute("data-ebao-inline-upload"), "");
+      assert.strictEqual(panelAttributes["data-ebao-toutiao-image-panel"], "true");
+      assert.strictEqual(upload.readToutiaoImagePanelUploadCount(), 0);
+      assert.strictEqual(upload.isToutiaoImagePanelUploadReady(0), false);
+      assert.strictEqual(upload.clickToutiaoImagePanelConfirm(0), false);
+      imagePanel.textContent = "上传图片 我的素材 本地上传 已上传 1 张图片";
+      confirmButton.disabled = false;
+      assert.strictEqual(upload.isToutiaoImagePanelUploadReady(0), true);
+      assert.strictEqual(upload.clickToutiaoImagePanelConfirm(0), true);
+      assert.deepStrictEqual(imagePanelClicks, ["panel-confirm"]);
+      assert.strictEqual(upload.isToutiaoImagePanelUploadReady(1), false);
+
+      const fallbackImage = fileInput("image/png,.jpg", imagePanel);
+      panelInputs = [unrelatedGeneric, fallbackImage];
+      assert.strictEqual(upload.markToutiaoImageFileInput(), "input[data-ebao-inline-upload='true']");
+      assert.strictEqual(fallbackImage.getAttribute("data-ebao-inline-upload"), "true");
+      panelInputs = [fallbackImage, fileInput("image/webp", imagePanel)];
+      assert.strictEqual(upload.markToutiaoImageFileInput(), "");
+      panelInputs = [unrelatedVideo, unrelatedGeneric];
+      assert.strictEqual(upload.markToutiaoImageFileInput(), "");
+      imagePanel.matches = () => false;
+      panelInputs = [localImage];
+      assert.strictEqual(upload.markToutiaoImageFileInput(), "input[data-ebao-inline-upload='true']");
+      imagePanel.matches = selector => selector.includes("[role='dialog']");
+      imagePanel.getBoundingClientRect = () => ({ width: 0, height: 0 });
+      assert.strictEqual(upload.markToutiaoImageFileInput(), "");
+      imagePanel.getBoundingClientRect = () => ({ width: 400, height: 300 });
+
+      const addClicks = [];
+      const addButton = {
+        textContent: "+", getAttribute: () => "",
+        getBoundingClientRect: () => ({ width: 36, height: 36 }),
+        click: () => addClicks.push("plus"),
+      };
+      const coverArea = {
+        querySelectorAll: () => [addButton], click: () => addClicks.push("area"),
+      };
+      global.document.querySelector = selector => selector === ".article-cover-images-wrap" ? coverArea : null;
+      assert.strictEqual(upload.openToutiaoCoverPanel(), true);
+      assert.deepStrictEqual(addClicks, ["plus"]);
+
+      const originalMutationObserver = global.MutationObserver;
+      const savedMarker = {
+        textContent: "草稿已保存",
+        getBoundingClientRect: () => ({ width: 100, height: 20 }),
+      };
+      let savedMarkers = [savedMarker];
+      let coverImages = [];
+      let onMutation;
+      let disconnected = false;
+      global.MutationObserver = class {
+        constructor(callback) { onMutation = callback; }
+        observe() {}
+        disconnect() { disconnected = true; }
+      };
+      global.document = { body: {}, querySelectorAll: selector =>
+        selector === ".article-cover-images-wrap img" ? coverImages : savedMarkers };
+      try {
+        upload.startToutiaoCoverSaveWatch();
+        assert.strictEqual(upload.hasToutiaoCoverSaveTransition(), false);
+        onMutation(); // A pre-existing saved marker is not a new cover save.
+        assert.strictEqual(upload.hasToutiaoCoverSaveTransition(), false);
+        savedMarkers = [];
+        onMutation();
+        savedMarkers = [savedMarker];
+        onMutation();
+        assert.strictEqual(upload.hasToutiaoCoverSaveTransition(), false);
+        coverImages = [{ getAttribute: () => "https://example.com/cover.png" }];
+        onMutation();
+        assert.strictEqual(upload.hasToutiaoCoverSaveTransition(), false);
+        savedMarkers = [];
+        onMutation();
+        savedMarkers = [savedMarker];
+        onMutation();
+        assert.strictEqual(upload.hasToutiaoCoverSaveTransition(), true);
+        upload.stopToutiaoCoverSaveWatch();
+        assert.strictEqual(disconnected, true);
+      } finally {
+        global.MutationObserver = originalMutationObserver;
+      }
+
+      const titleElement = {};
+      const articleRoot = {
+        parentElement: null, contains: element => element === titleElement,
+        querySelectorAll: selector => selector.includes("toolbar") ? [toolbarElement] : toolbarButtons,
+      };
+      const editorElement = { parentElement: articleRoot };
+      const clickedButtons = [];
+      const toolbarButtons = Array.from({ length: 12 }, (_, index) => ({
+        textContent: "", getAttribute: name => index === 3 && name === "title" ? "" : "",
+        getBoundingClientRect: () => ({ top: 160, bottom: 188, left: 100 + index * 35,
+          right: 128 + index * 35, width: 28, height: 28 }),
+        click: () => clickedButtons.push(index),
+      }));
+      const toolbarElement = {
+        getBoundingClientRect: () => ({ top: 155, bottom: 190, left: 100, right: 540, width: 440, height: 35 }),
+        getAttribute: () => "", querySelectorAll: () => toolbarButtons,
+      };
+      global.document = {
+        querySelector: selector => selector === "#editor" ? editorElement : titleElement,
+      };
+      assert.strictEqual(upload.clickToutiaoImageToolbarButton("#editor"), true);
+      assert.deepStrictEqual(clickedButtons, [11]);
+      toolbarButtons[3].getAttribute = name => name === "title" ? "插入图片" : "";
+      assert.strictEqual(upload.clickToutiaoImageToolbarButton("#editor"), true);
+      assert.deepStrictEqual(clickedButtons, [11, 3]);
+      toolbarButtons[3].getAttribute = () => "";
+      toolbarButtons[11].textContent = "发布";
+      assert.strictEqual(upload.clickToutiaoImageToolbarButton("#editor"), false);
+      assert.deepStrictEqual(clickedButtons, [11, 3]);
+      let evaluations = 0;
+      await assert.rejects(upload.uploadToutiaoImage({
+        evaluate: async () => ++evaluations === 1 ? [] : false,
+        click: async () => {},
+      }, "#editor", { path: "/tmp/image.png", mime: "image/png" }), /未找到头条文章图片工具栏按钮/u);
+      assert.strictEqual(evaluations, 2);
+
       const image = path.join(temporary, "test.png");
       fs.writeFileSync(image, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]));
+      const coverSteps = [];
+      let coverRead = 0;
+      const coverPage = {
+        evaluate: async callback => {
+          if (!callback.name) return ++coverRead === 1
+            ? { cover: [], body: [] } : { cover: "https://example.com/cover.png", body: [] };
+          coverSteps.push(callback.name);
+          if (callback.name === "openToutiaoCoverPanel") return true;
+          if (callback.name === "markToutiaoImageFileInput") return "input[data-ebao-inline-upload='true']";
+          if (callback.name === "readToutiaoImagePanelUploadCount") return 0;
+          if (callback.name === "clickToutiaoImagePanelConfirm") return true;
+          return undefined;
+        },
+        $: async () => ({ uploadFile: async () => { coverSteps.push("uploadFile"); } }),
+        waitForFunction: async callback => { coverSteps.push(`wait:${callback.name || "cover-image"}`); },
+        click: async () => { throw new Error("cover upload must not click the editor"); },
+      };
+      assert.strictEqual(await upload.uploadToutiaoCover(coverPage, "#editor",
+        { path: image, mime: "image/png" }, true), "https://example.com/cover.png");
+      assert.deepStrictEqual(coverSteps, [
+        "openToutiaoCoverPanel", "markToutiaoImageFileInput", "readToutiaoImagePanelUploadCount",
+        "uploadFile", "wait:isToutiaoImagePanelUploadReady", "startToutiaoCoverSaveWatch",
+        "clickToutiaoImagePanelConfirm", "wait:cover-image", "wait:hasToutiaoCoverSaveTransition",
+        "stopToutiaoCoverSaveWatch",
+      ]);
+      coverSteps.length = 0;
+      coverRead = 0;
+      coverPage.waitForFunction = async callback => {
+        coverSteps.push(`wait:${callback.name || "cover-image"}`);
+        if (callback.name === "hasToutiaoCoverSaveTransition") throw new Error("timeout");
+      };
+      coverPage.goto = async () => { throw new Error("unconfirmed cover must not navigate"); };
+      await assert.rejects(upload.uploadToutiaoCover(coverPage, "#editor",
+        { path: image, mime: "image/png" }, true), /未确认草稿已保存/u);
+      assert.strictEqual(coverSteps.at(-1), "stopToutiaoCoverSaveWatch");
+
+      const reusedCoverSteps = [];
+      const reusedCoverPage = {
+        evaluate: async callback => {
+          reusedCoverSteps.push(callback.name || "cover-picker-action");
+          return true;
+        },
+        waitForFunction: async callback => {
+          reusedCoverSteps.push(`wait:${callback.name || "cover-picker"}`);
+          if (callback.name === "hasToutiaoCoverSaveTransition") throw new Error("timeout");
+        },
+        goto: async () => { throw new Error("unconfirmed cover must not navigate"); },
+      };
+      await assert.rejects(upload.selectToutiaoCover(reusedCoverPage,
+        "https://example.com/cover.png", true), /未确认草稿已保存/u);
+      assert.strictEqual(reusedCoverSteps.at(-1), "stopToutiaoCoverSaveWatch");
+
+      const inlineSteps = [];
+      let inlineRead = 0;
+      const inlinePage = {
+        evaluate: async callback => {
+          if (!callback.name) return ++inlineRead === 1 ? [] : "https://example.com/inline.png";
+          inlineSteps.push(callback.name);
+          if (callback.name === "clickToutiaoImageToolbarButton") return true;
+          if (callback.name === "markToutiaoImageFileInput") return "input[data-ebao-inline-upload='true']";
+          if (callback.name === "readToutiaoImagePanelUploadCount") return 0;
+          if (callback.name === "clickToutiaoImagePanelConfirm") return true;
+          return undefined;
+        },
+        $: async () => ({ uploadFile: async () => { inlineSteps.push("uploadFile"); } }),
+        waitForFunction: async callback => { inlineSteps.push(`wait:${callback.name || "editor-image"}`); },
+        click: async selector => { assert.strictEqual(selector, "#editor"); inlineSteps.push("editor-click"); },
+      };
+      assert.strictEqual(await upload.uploadToutiaoImage(inlinePage, "#editor",
+        { path: image, mime: "image/png" }), "https://example.com/inline.png");
+      assert.deepStrictEqual(inlineSteps, [
+        "editor-click", "clickToutiaoImageToolbarButton", "markToutiaoImageFileInput",
+        "readToutiaoImagePanelUploadCount", "uploadFile", "wait:isToutiaoImagePanelUploadReady",
+        "clickToutiaoImagePanelConfirm", "wait:editor-image",
+      ]);
       await assert.rejects(upload.uploadBaijiahaoImage({ evaluate: async () => ({ errmsg: "invalid" }) },
         { path: image, mime: "image/png" }), /图片上传失败/u);
       await assert.rejects(upload.uploadBaijiahaoImage({ evaluate: async () => ({ errno: 1, errmsg: "success", ret: { https_url: "https://example.com/a.png" } }) },

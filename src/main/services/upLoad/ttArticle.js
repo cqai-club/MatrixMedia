@@ -2,11 +2,11 @@
 
 import {
   captureArticleNotices, clickArticleAction, confirmPlatformOutcome, currentUrl, failArticle,
-  confirmToutiaoBodyAccepted, confirmToutiaoDraftAutosave, confirmToutiaoInitialDraftAutosave,
+  confirmToutiaoBodyAccepted, confirmToutiaoDraftAutosave,
   fillArticleMetadata, fillArticleTitle, findArticleEditor, finishArticle,
   observeToutiaoDraftSave, pasteArticleHtml, renderUploadedArticle,
 } from "./articleWebTools.js";
-import { selectToutiaoCover, uploadToutiaoImage } from "./articleImageUpload.js";
+import { selectToutiaoCover, uploadToutiaoCover, uploadToutiaoImage } from "./articleImageUpload.js";
 
 /** Toutiao article adapter; real-account draft/publish acceptance remains separate. */
 export default async function publishToutiaoArticle(page, data, window, event) {
@@ -18,38 +18,42 @@ export default async function publishToutiaoArticle(page, data, window, event) {
     saveObserver?.expect(data.data.title, data.data.content);
     await fillArticleTitle(page, data.data.title);
     if (mode === "draft") clicked = true; // Title edits can already trigger autosave.
-    if (saveObserver) {
-      // The first Toutiao autosave creates a draft without a pgc_id. A full-body
-      // first save was rejected (7050). Leaving the title field for the still
-      // empty editor triggers its title-only autosave before any body input.
-      await page.click(editor);
-      const initial = await confirmToutiaoInitialDraftAutosave(page, data.data.title, saveObserver);
-      if (!initial.confirmed) throw new Error(initial.reason);
-    }
     const uploaded = {};
     for (const asset of data.data.images || []) {
       uploaded[asset.id] = await uploadToutiaoImage(page, editor, asset);
     }
-    let coverUrl = "";
-    if (data.data.coverPath) {
-      const existing = (data.data.images || []).find(asset => asset.path === data.data.coverPath);
-      coverUrl = existing ? uploaded[existing.id] : await uploadToutiaoImage(page, editor, {
-        path: data.data.coverPath, mime: data.data.coverMime,
-      });
-    }
     const html = renderUploadedArticle(data, uploaded);
+    saveObserver?.expect(data.data.title, data.data.content, html);
     await pasteArticleHtml(page, editor, html, data.data.content, page, Object.values(uploaded), {
-      preferKeyboardForPlain: true,
+      preferKeyboardForPlain: true, verifyWholeBody: true,
     });
     await confirmToutiaoBodyAccepted(page);
+    // Confirm the body save before choosing a cover, so a late body save cannot
+    // be mistaken for the cover's own autosave transition.
+    if (mode === "draft" && data.data.coverPath) {
+      const bodySaved = await saveObserver.waitForFullBodySave(30000);
+      if (!bodySaved.confirmed) throw new Error(bodySaved.reason);
+    }
+    let coverUrl = "";
+    let selectExistingCover = false;
+    if (data.data.coverPath) {
+      const existing = (data.data.images || []).find(asset => asset.path === data.data.coverPath);
+      if (existing) {
+        coverUrl = uploaded[existing.id];
+        selectExistingCover = true;
+      } else coverUrl = await uploadToutiaoCover(page, editor, {
+        path: data.data.coverPath, mime: data.data.coverMime,
+      }, mode === "draft");
+    }
     await fillArticleMetadata(page, data);
-    if (coverUrl) await selectToutiaoCover(page, coverUrl);
+    if (selectExistingCover) await selectToutiaoCover(page, coverUrl, mode === "draft");
 
     const before = currentUrl(page);
     if (mode === "draft") {
       // The current Toutiao editor autosaves to Drafts; it has no explicit
       // "保存草稿" action. Never report success before its save indicator confirms.
-      const result = await confirmToutiaoDraftAutosave(page, data.data.title, 30000, saveObserver);
+      const result = await confirmToutiaoDraftAutosave(page, data.data.title, 30000, saveObserver,
+        { expectedHtml: html, coverUrl });
       if (!result.confirmed) throw new Error(result.reason);
       await finishArticle(page, data, window, event, mode, before, true);
       return;
