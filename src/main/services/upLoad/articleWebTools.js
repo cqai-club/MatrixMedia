@@ -33,13 +33,47 @@ export async function findBaijiahaoEditor(page) {
   }
 }
 
-export async function fillArticleTitle(page, title) {
+export async function fillArticleTitle(page, title, { stableVisible = false } = {}) {
   await page.waitForSelector(TITLE_SELECTOR, { visible: true, timeout: 25000 });
-  await page.click(TITLE_SELECTOR, { clickCount: 3 });
+  if (!stableVisible) {
+    await page.click(TITLE_SELECTOR, { clickCount: 3 });
+    await page.keyboard.press("Backspace");
+    await page.type(TITLE_SELECTOR, title, { delay: 25 });
+    const actual = await page.$eval(TITLE_SELECTOR, element => element.value || "");
+    if (actual.trim() !== title.trim()) throw new Error("文章标题未写入");
+    return TITLE_SELECTOR;
+  }
+  const selector = await page.evaluate(candidateSelector => {
+    const candidates = [...document.querySelectorAll(candidateSelector)].filter(element => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 200 && rect.height > 0
+        && getComputedStyle(element).visibility !== "hidden";
+    });
+    if (candidates.length !== 1) return "";
+    for (const element of document.querySelectorAll("[data-ebao-article-title]")) {
+      element.removeAttribute("data-ebao-article-title");
+    }
+    candidates[0].setAttribute("data-ebao-article-title", "true");
+    return "[data-ebao-article-title='true']";
+  }, TITLE_SELECTOR);
+  if (!selector) throw new Error("文章标题输入框未能唯一定位");
+  await page.click(selector, { clickCount: 3 });
   await page.keyboard.press("Backspace");
-  await page.type(TITLE_SELECTOR, title, { delay: 25 });
-  const actual = await page.$eval(TITLE_SELECTOR, element => element.value || "");
-  if (actual.trim() !== title.trim()) throw new Error("文章标题未写入");
+  await page.type(selector, title, { delay: 25 });
+  try {
+    await page.waitForFunction((candidateSelector, expected) => {
+      const candidates = [...document.querySelectorAll(candidateSelector)].filter(element => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 200 && rect.height > 0
+          && getComputedStyle(element).visibility !== "hidden";
+      });
+      if (candidates.length !== 1 || String(candidates[0].value || "").trim() !== expected) return false;
+      // React may replace the input while page.type is still completing.
+      candidates[0].setAttribute("data-ebao-article-title", "true");
+      return true;
+    }, { timeout: 5000 }, TITLE_SELECTOR, title.trim());
+  } catch { throw new Error("文章标题未写入"); }
+  return selector;
 }
 
 export async function pasteArticleHtml(page, editor, html, plain, context = page, expectedImages = [], options = {}) {
@@ -160,6 +194,26 @@ function emptyToutiaoContent(content) {
     .replace(/&(?:nbsp|#160|#xA0);/giu, " ").trim();
 }
 
+async function readToutiaoDraftSaveMarker(page) {
+  if (typeof page.evaluate !== "function") return "";
+  try {
+    return await page.evaluate(() => {
+      const labels = [...document.querySelectorAll("span,div,p")]
+        .filter(element => {
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0
+            && ![...element.children].some(child =>
+              String(child.textContent || "").trim() === String(element.textContent || "").trim());
+        })
+        .map(element => String(element.textContent || "").trim());
+      if (labels.some(label => /^草稿保存中/u.test(label))) return "saving";
+      if (labels.some(label => /^(?:草稿已保存|草稿保存成功|已自动保存|自动保存成功)$/u.test(label))) return "saved";
+      if (labels.some(label => /^(?:草稿保存失败|保存草稿失败)$/u.test(label))) return "failed";
+      return "";
+    });
+  } catch { return ""; }
+}
+
 /** Observe title-only and full-body saves separately; only the latter confirms content. */
 export function observeToutiaoDraftSave(page) {
   let expectedTitle = "";
@@ -171,23 +225,52 @@ export function observeToutiaoDraftSave(page) {
   let changedPath = false;
   let changedPayload = false;
   let partialBody = false;
+  let finalBodyExpected = false;
+  const diagnostic = {
+    relatedPosts: new Set(), saveEndpointPosts: new Set(), alternateOrigin: false,
+    alternatePath: false, missingTitle: false, missingContent: false, titleMismatch: false,
+    titleOnly: false, unreadablePayload: false, saveMarker: "",
+  };
   const inspect = request => {
     const url = new URL(request.url());
-    if (url.origin !== "https://mp.toutiao.com" || request.method() !== "POST") return null;
+    if (request.method() !== "POST") return null;
     const path = url.pathname;
-    if (path !== "/mp/agw/article/publish" && !/(?:article|draft)/iu.test(path)) return null;
+    const relatedPath = /(?:article|draft|publish|save)/iu.test(path);
+    const relatedHost = url.hostname === "toutiao.com" || url.hostname.endsWith(".toutiao.com");
+    if (finalBodyExpected && relatedHost && relatedPath) {
+      diagnostic.relatedPosts.add(request);
+      if (url.origin !== "https://mp.toutiao.com") diagnostic.alternateOrigin = true;
+      else if (path === "/mp/agw/article/publish") diagnostic.saveEndpointPosts.add(request);
+      else diagnostic.alternatePath = true;
+    }
+    if (url.origin !== "https://mp.toutiao.com" || !relatedPath) return null;
     const raw = request.postData() || "";
     let fields = new URLSearchParams(raw);
     if (raw.trimStart().startsWith("{")) {
-      const payload = JSON.parse(raw);
+      let payload;
+      try { payload = JSON.parse(raw); }
+      catch {
+        if (finalBodyExpected) diagnostic.unreadablePayload = true;
+        return null;
+      }
       fields = { get: key => payload?.[key] };
     }
-    if (!expectedTitle || String(fields.get("title") || "").trim() !== expectedTitle) {
-      if (path === "/mp/agw/article/publish" && expectedTitle && !fields.get("title")) changedPayload = true;
+    const requestTitle = String(fields.get("title") || "").trim();
+    if (!expectedTitle || requestTitle !== expectedTitle) {
+      if (path === "/mp/agw/article/publish" && expectedTitle && !requestTitle) {
+        changedPayload = true;
+        if (finalBodyExpected) diagnostic.missingTitle = true;
+      } else if (finalBodyExpected && path === "/mp/agw/article/publish" && requestTitle) {
+        diagnostic.titleMismatch = true;
+      }
       return null;
     }
-    const content = String(fields.get("content") || "");
+    const contentField = fields.get("content");
+    if (finalBodyExpected && path === "/mp/agw/article/publish"
+      && (contentField === undefined || contentField === null)) diagnostic.missingContent = true;
+    const content = String(contentField || "");
     const titleOnly = emptyToutiaoContent(content);
+    if (titleOnly && finalBodyExpected) diagnostic.titleOnly = true;
     const fullBody = Boolean(expectedBodyText
       && compactArticleText(content).includes(expectedBodyText));
     if (!titleOnly && expectedBodyText && !fullBody) partialBody = true;
@@ -266,6 +349,17 @@ export function observeToutiaoDraftSave(page) {
         full.invalidResponse = false;
         full.saved = false;
         partialBody = false;
+        finalBodyExpected = true;
+        diagnostic.relatedPosts.clear();
+        diagnostic.saveEndpointPosts.clear();
+        diagnostic.alternateOrigin = false;
+        diagnostic.alternatePath = false;
+        diagnostic.missingTitle = false;
+        diagnostic.missingContent = false;
+        diagnostic.titleMismatch = false;
+        diagnostic.titleOnly = false;
+        diagnostic.unreadablePayload = false;
+        diagnostic.saveMarker = "";
       }
       expectedBodyText = compactArticleText(html);
     },
@@ -286,17 +380,35 @@ export function observeToutiaoDraftSave(page) {
     },
     async waitForFullBodySave(timeout = 30000) {
       const deadline = Date.now() + timeout;
-      while (!full.saved && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      while (!full.saved && Date.now() < deadline) {
+        diagnostic.saveMarker = await readToutiaoDraftSaveMarker(page);
+        if (!full.saved) await new Promise(resolve => setTimeout(resolve, 100));
+      }
       if (full.saved) return { confirmed: true };
-      return { confirmed: false, reason: full.lastCode !== undefined && full.lastCode !== 0
-        ? `头条完整正文草稿保存接口拒绝（错误码 ${full.lastCode}）`
-        : full.httpStatus !== undefined ? `头条完整正文草稿保存接口返回 HTTP ${full.httpStatus}`
-          : full.invalidResponse ? "头条完整正文草稿保存响应格式未识别"
-            : full.failures > 0 ? "头条完整正文草稿保存网络请求失败"
-              : full.responses > 0 ? "头条完整正文草稿保存响应未确认"
-                : full.requests.size > 0 ? "头条完整正文草稿保存请求仍未返回"
-                  : partialBody ? "头条保存请求中的正文不完整或与待发布正文不一致"
-                    : "未观察到头条完整正文的草稿保存请求" };
+      let reason = "未观察到头条完整正文的草稿保存请求";
+      if (full.lastCode !== undefined && full.lastCode !== 0) {
+        reason = `头条完整正文草稿保存接口拒绝（错误码 ${full.lastCode}）`;
+      } else if (full.httpStatus !== undefined) {
+        reason = `头条完整正文草稿保存接口返回 HTTP ${full.httpStatus}`;
+      } else if (full.invalidResponse) reason = "头条完整正文草稿保存响应格式未识别";
+      else if (full.failures > 0) reason = "头条完整正文草稿保存网络请求失败";
+      else if (full.responses > 0) reason = "头条完整正文草稿保存响应未确认";
+      else if (full.requests.size > 0) reason = "头条完整正文草稿保存请求仍未返回";
+      else if (partialBody) reason = "头条保存请求中的正文不完整或与待发布正文不一致";
+      else if (diagnostic.alternatePath) reason = "头条可能更换了草稿保存接口路径，未确认完整正文保存";
+      else if (diagnostic.alternateOrigin) reason = "头条可能更换了草稿保存接口域名，未确认完整正文保存";
+      else if (diagnostic.unreadablePayload || diagnostic.missingTitle || diagnostic.missingContent) {
+        reason = "头条草稿保存请求体格式未识别，未确认完整正文保存";
+      } else if (diagnostic.titleMismatch) reason = "头条草稿保存请求的标题与当前文章不一致";
+      else if (diagnostic.titleOnly) reason = "仅观察到头条标题草稿保存，未观察到完整正文保存";
+      else if (diagnostic.saveEndpointPosts.size > 0) reason = "观察到头条文章保存接口，但未确认完整正文保存";
+      else if (diagnostic.relatedPosts.size > 0) reason = "观察到头条相关请求，但未确认完整正文保存";
+      // The page indicator may refer to an earlier title-only save. Describe
+      // it for diagnosis, but never use it alone to leave the editor.
+      const marker = diagnostic.saveMarker === "saving" ? "；页面仍显示草稿保存中"
+        : diagnostic.saveMarker === "saved" ? "；页面显示已保存，但无法确认完整正文"
+          : diagnostic.saveMarker === "failed" ? "；页面显示草稿保存失败" : "";
+      return { confirmed: false, reason: reason + marker };
     },
     stop: () => {
       page.off("request", onRequest);
@@ -304,6 +416,8 @@ export function observeToutiaoDraftSave(page) {
       page.off("response", onResponse);
       initial.requests.clear();
       full.requests.clear();
+      diagnostic.relatedPosts.clear();
+      diagnostic.saveEndpointPosts.clear();
     },
   };
 }

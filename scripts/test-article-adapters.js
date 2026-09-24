@@ -85,6 +85,50 @@ try {
       await build(toutiaoAdapterBuild);
       const publishToutiaoArticle = require(path.join(bundleDir, "ttArticle-test.cjs")).default;
       const before = "https://mp.toutiao.com/profile_v4/graphic/publish";
+      const titleElements = [
+        { value: "旧值", getBoundingClientRect: () => ({ width: 0, height: 0 }) },
+        {
+          value: "", getBoundingClientRect: () => ({ width: 420, height: 40 }),
+          setAttribute(name, value) { this[name] = value; },
+          removeAttribute(name) { delete this[name]; },
+        },
+      ];
+      const oldGetComputedStyle = global.getComputedStyle;
+      global.getComputedStyle = () => ({ visibility: "visible" });
+      const titlePage = {
+        waitForSelector: async () => {},
+        evaluate: async (callback, ...args) => {
+          global.document = { querySelectorAll: selector => selector === "[data-ebao-article-title]"
+            ? [] : titleElements };
+          return callback(...args);
+        },
+        click: async selector => assert.strictEqual(selector, "[data-ebao-article-title='true']"),
+        keyboard: { press: async key => assert.strictEqual(key, "Backspace") },
+        type: async (selector, title) => {
+          assert.strictEqual(selector, "[data-ebao-article-title='true']");
+          assert.strictEqual(title, "测试标题");
+        },
+        waitForFunction: async (callback, _options, ...args) => {
+          global.document = { querySelectorAll: () => titleElements };
+          assert.strictEqual(callback(...args), false);
+          titleElements[1] = { ...titleElements[1], value: "测试标题" }; // React replaced the marked input.
+          assert.strictEqual(callback(...args), true);
+        },
+      };
+      assert.strictEqual(await tools.fillArticleTitle(titlePage, "测试标题", { stableVisible: true }),
+        "[data-ebao-article-title='true']");
+      assert.strictEqual(titleElements[0].value, "旧值");
+      assert.strictEqual(titleElements[1]["data-ebao-article-title"], "true");
+      titleElements[1].value = "";
+      await assert.rejects(tools.fillArticleTitle({ ...titlePage,
+        evaluate: async (callback, ...args) => {
+          global.document = { querySelectorAll: () => [titleElements[1], {
+            getBoundingClientRect: () => ({ width: 420, height: 40 }),
+          }] };
+          return callback(...args);
+        },
+      }, "测试标题", { stableVisible: true }), /标题输入框未能唯一定位/u);
+      global.getComputedStyle = oldGetComputedStyle;
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt(before), "draft", before), false);
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt(before, ["图片保存成功"]), "draft", before, ["图片保存成功"]), false);
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt(before, ["草稿已保存"]), "draft", before), true);
@@ -351,6 +395,59 @@ try {
       assert.strictEqual((await missingMiddle.waitForFullBodySave(1)).confirmed, true);
       missingMiddle.stop();
 
+      const savingMarkerEvents = new EventEmitter();
+      savingMarkerEvents.evaluate = async callback => {
+        global.document = { querySelectorAll: () => [{
+          textContent: "草稿保存中...", children: [],
+          getBoundingClientRect: () => ({ width: 100, height: 24 }),
+        }] };
+        return callback();
+      };
+      const savingMarker = tools.observeToutiaoDraftSave(savingMarkerEvents);
+      savingMarker.expect("测试标题", "完整测试正文", "<p>完整测试正文</p>");
+      assert.match((await savingMarker.waitForFullBodySave(1)).reason, /页面仍显示草稿保存中/u);
+      savingMarker.stop();
+      const savedMarkerEvents = new EventEmitter();
+      savedMarkerEvents.evaluate = async callback => {
+        global.document = { querySelectorAll: () => [{
+          textContent: "草稿已保存", children: [],
+          getBoundingClientRect: () => ({ width: 100, height: 24 }),
+        }] };
+        return callback();
+      };
+      const observedSavedMarker = tools.observeToutiaoDraftSave(savedMarkerEvents);
+      observedSavedMarker.expect("测试标题", "完整测试正文", "<p>完整测试正文</p>");
+      assert.match((await observedSavedMarker.waitForFullBodySave(1)).reason, /页面显示已保存，但无法确认完整正文/u);
+      observedSavedMarker.stop();
+      const rejectedMarkerEvents = new EventEmitter();
+      const rejectedStates = ["saving", "saved"];
+      rejectedMarkerEvents.evaluate = async () => rejectedStates.shift() || "saved";
+      const rejectedMarker = tools.observeToutiaoDraftSave(rejectedMarkerEvents);
+      rejectedMarker.expect("测试标题", "完整测试正文", "<p>完整测试正文</p>");
+      rejectedMarkerEvents.emit("response", saveResponse("<p>完整测试正文</p>", 7050));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.match((await rejectedMarker.waitForFullBodySave(1)).reason, /错误码 7050/u);
+      rejectedMarker.stop();
+      const alternatePathEvents = new EventEmitter();
+      const alternatePath = tools.observeToutiaoDraftSave(alternatePathEvents);
+      alternatePath.expect("测试标题", "完整测试正文", "<p>完整测试正文</p>");
+      alternatePathEvents.emit("request", saveRequest({
+        content: "<p>完整测试正文</p>",
+        url: "https://mp.toutiao.com/mp/agw/article/save?token=private",
+      }));
+      assert.match((await alternatePath.waitForFullBodySave(1)).reason, /接口路径/u);
+      alternatePath.stop();
+      const missingContentEvents = new EventEmitter();
+      const missingContent = tools.observeToutiaoDraftSave(missingContentEvents);
+      missingContent.expect("测试标题", "完整测试正文", "<p>完整测试正文</p>");
+      missingContentEvents.emit("request", {
+        ...saveRequest(), postData: () => new URLSearchParams({ title: "测试标题" }).toString(),
+      });
+      const missingContentReason = (await missingContent.waitForFullBodySave(1)).reason;
+      assert.match(missingContentReason, /请求体格式未识别/u);
+      assert.doesNotMatch(missingContentReason, /完整测试正文|token=private/u);
+      missingContent.stop();
+
       const sequence = [];
       const saveOptions = [];
       const observer = {
@@ -361,7 +458,10 @@ try {
       global.__ttAdapterMocks = {
         observeToutiaoDraftSave: () => observer,
         findArticleEditor: async () => "#editor",
-        fillArticleTitle: async () => { sequence.push("title"); },
+        fillArticleTitle: async (_page, _title, options) => {
+          assert.deepStrictEqual(options, { stableVisible: true });
+          sequence.push("title"); return "#title";
+        },
         renderUploadedArticle: () => "<p>完整测试正文</p>",
         pasteArticleHtml: async (_page, _editor, _html, _plain, _context, _images, options) => {
           assert.strictEqual(options.verifyWholeBody, true);
@@ -387,15 +487,26 @@ try {
         finishArticle: async () => { sequence.push("finished"); },
         failArticle: async () => { sequence.push("failed"); },
       };
-      const draftPage = {};
+      const draftPage = { click: async selector => {
+        assert.strictEqual(selector, "#title");
+        sequence.push("blur");
+      } };
       const draftData = { publishToDraft: true, data: { title: "测试标题", content: "完整测试正文", images: [] } };
       await publishToutiaoArticle(draftPage, draftData, null, null);
-      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "finished", "stop"]);
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "blur", "finished", "stop"]);
       assert.deepStrictEqual(saveOptions.at(-1), { expectedHtml: "<p>完整测试正文</p>", coverUrl: "" });
+      sequence.length = 0;
+      await publishToutiaoArticle({
+        ...draftPage,
+        click: async () => { throw new Error("stale title marker"); },
+        evaluate: async () => { sequence.push("blur-fallback"); },
+      }, draftData, null, null);
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>",
+        "body", "word-count", "blur-fallback", "finished", "stop"]);
       sequence.length = 0;
       global.__ttAdapterMocks.confirmToutiaoDraftAutosave = async () => ({ confirmed: false, reason: "完整正文保存未确认" });
       await publishToutiaoArticle(draftPage, draftData, null, null);
-      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "failed", "stop"]);
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "blur", "failed", "stop"]);
       sequence.length = 0;
       global.__ttAdapterMocks.confirmToutiaoDraftAutosave = async (_page, _title, _timeout, _observer, options) => {
         saveOptions.push(options);
@@ -404,7 +515,7 @@ try {
       await publishToutiaoArticle(draftPage, {
         ...draftData, data: { ...draftData.data, coverPath: "/tmp/cover.png", coverMime: "image/png" },
       }, null, null);
-      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "body-saved", "cover-upload", "finished", "stop"]);
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "blur", "body-saved", "cover-upload", "finished", "stop"]);
       assert.deepStrictEqual(saveOptions.at(-1), {
         expectedHtml: "<p>完整测试正文</p>", coverUrl: "https://example.com/cover.png",
       });
@@ -417,7 +528,7 @@ try {
         ...draftData, data: { ...draftData.data, coverPath: "/tmp/cover.png", coverMime: "image/png" },
       }, null, null);
       assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>",
-        "body", "word-count", "body-saved", "cover-save-unconfirmed", "failed", "stop"]);
+        "body", "word-count", "blur", "body-saved", "cover-save-unconfirmed", "failed", "stop"]);
       sequence.length = 0;
       observer.waitForFullBodySave = async () => {
         sequence.push("body-save-unconfirmed");
@@ -427,7 +538,7 @@ try {
         ...draftData, data: { ...draftData.data, coverPath: "/tmp/cover.png", coverMime: "image/png" },
       }, null, null);
       assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>",
-        "body", "word-count", "body-save-unconfirmed", "failed", "stop"]);
+        "body", "word-count", "blur", "body-save-unconfirmed", "failed", "stop"]);
       delete global.__ttAdapterMocks;
 
       const originalDataTransfer = global.DataTransfer;

@@ -16,7 +16,7 @@ export default async function publishToutiaoArticle(page, data, window, event) {
   try {
     const editor = await findArticleEditor(page);
     saveObserver?.expect(data.data.title, data.data.content);
-    await fillArticleTitle(page, data.data.title);
+    const titleSelector = await fillArticleTitle(page, data.data.title, { stableVisible: true });
     if (mode === "draft") clicked = true; // Title edits can already trigger autosave.
     const uploaded = {};
     for (const asset of data.data.images || []) {
@@ -28,6 +28,27 @@ export default async function publishToutiaoArticle(page, data, window, event) {
       preferKeyboardForPlain: true, verifyWholeBody: true,
     });
     await confirmToutiaoBodyAccepted(page);
+    // A rich paste can leave the entire body selected. Move focus to the
+    // already-filled title so Toutiao commits the editor change and autosaves.
+    try { await page.click(titleSelector); }
+    catch {
+      // Toutiao may rerender the input and drop our marker after the paste.
+      // Focus the unique visible title if present; otherwise at least blur
+      // the editor. Save observation and draft reopening still decide success.
+      try {
+        await page.evaluate((expected, editorSelector) => {
+          const titles = [...document.querySelectorAll("input[placeholder*='标题'],textarea[placeholder*='标题']")]
+            .filter(element => {
+              const rect = element.getBoundingClientRect();
+              return rect.width > 200 && rect.height > 0
+                && getComputedStyle(element).visibility !== "hidden"
+                && String(element.value || "").trim() === expected;
+            });
+          if (titles.length === 1) titles[0].focus();
+          else document.querySelector(editorSelector)?.blur();
+        }, String(data.data.title || "").trim(), editor);
+      } catch { /* The mandatory save and reopened-draft checks report failure. */ }
+    }
     // Confirm the body save before choosing a cover, so a late body save cannot
     // be mistaken for the cover's own autosave transition.
     if (mode === "draft" && data.data.coverPath) {

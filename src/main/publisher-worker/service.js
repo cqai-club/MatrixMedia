@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { runSingleFilePublish } from "../services/publishVideo.js";
+import { destroyAllPublishWindows, hasOpenPublishWindow, TOUTIAO_DRAFT_WINDOW_NOTICE } from "../services/publishWindowRegistry.js";
 import ptConfig from "../config/ptConfig.js";
 import { PublisherProtocolError } from "./protocol.js";
 import { PublisherStore, publicSubmission } from "./store.js";
@@ -140,6 +141,8 @@ export class PublisherWorkerService {
           }
           snapshotDirectory = captureContentPackage(source, this.snapshotsRoot, id);
         }
+        // 登录检查可能异步等待；再次确认没有遗留发布窗口，才接受任务。
+        selected.forEach(account => this.accounts.assertNoOpenWindow(account.id));
         const creativeStatement = source?.manifest.creativeStatement || String(params.creativeStatement || "none");
         if (!CREATIVE_STATEMENTS.has(creativeStatement)) throw new PublisherProtocolError("invalid-submission", "内容声明无效");
         const submission = this.store.createSubmission({
@@ -184,6 +187,17 @@ export class PublisherWorkerService {
           this.store.updateSubmission(submission.id, { state: "failed", finishedAt: new Date().toISOString(), message: "目标账号已被删除" });
           continue;
         }
+        try {
+          // 任务可能在先前窗口关闭前已经排队。整单在任何目标开始前检查，
+          // 防止多平台提交只执行一部分或同账号窗口共享 session。
+          accounts.forEach(account => this.accounts.assertNoOpenWindow(account.id));
+        } catch (error) {
+          this.store.updateSubmission(submission.id, {
+            state: "failed", finishedAt: new Date().toISOString(),
+            message: `${error?.message || String(error)}；本次提交未开始，请核查并关闭窗口后重新提交`,
+          });
+          continue;
+        }
         accounts.forEach(account => this.busyAccounts.add(account.id));
         this.store.updateSubmission(submission.id, { state: "running", startedAt: new Date().toISOString() });
         try {
@@ -211,7 +225,12 @@ export class PublisherWorkerService {
               } else if (account.platform === "blbl" && submission.contentType === "article") {
                 results.push(await runBilibiliArticle(account, submission, effective));
               } else if (account.platform === "tt" && submission.contentType === "article") {
-                results.push(await runToutiaoArticle(account, submission, effective));
+                const outcome = await runToutiaoArticle(account, submission, effective);
+                if (outcome.exitCode !== 0 && hasOpenPublishWindow(account.partition)
+                  && !String(outcome.message || "").includes(TOUTIAO_DRAFT_WINDOW_NOTICE)) {
+                  outcome.message = `${outcome.message || "头条草稿保存未确认"}；${TOUTIAO_DRAFT_WINDOW_NOTICE}`;
+                }
+                results.push(outcome);
               } else if (account.platform === "bjh" && submission.contentType === "article") {
                 results.push(await runBaijiahaoArticle(account, submission, effective));
               } else if (account.platform === "wxmp" && submission.contentType === "article") {
@@ -252,6 +271,7 @@ export class PublisherWorkerService {
 
   async dispose() {
     this.stopping = true;
+    destroyAllPublishWindows();
     this.accounts.dispose();
   }
 }

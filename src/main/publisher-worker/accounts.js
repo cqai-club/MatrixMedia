@@ -6,6 +6,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import ptConfig from "../config/ptConfig";
 import { applyAccountProxyToSession } from "../services/proxyConfig.js";
+import { hasOpenPublishWindow } from "../services/publishWindowRegistry.js";
 import { PublisherProtocolError } from "./protocol.js";
 import { publicAccount } from "./store.js";
 import { publisherUserAgent } from "./userAgent.js";
@@ -383,10 +384,17 @@ export class PublisherAccounts {
 
   assertIdle(id) {
     if (this.busy(id)) throw new PublisherProtocolError("account-busy", "当前账号正在提交内容，请稍后再试");
+    const account = this.require(id);
+    if (hasOpenPublishWindow(account.partition)) {
+      throw new PublisherProtocolError("account-window-open", "该账号的发布窗口仍在打开，请核查内容并关闭窗口后再操作");
+    }
   }
 
   assertNoOpenWindow(id) {
     const account = this.require(id);
+    if (hasOpenPublishWindow(account.partition)) {
+      throw new PublisherProtocolError("account-window-open", "该账号的发布窗口仍在打开，请核查内容并关闭窗口后再提交");
+    }
     const win = this.windows.get(account.partition);
     if (win && win.isDestroyed()) this.windows.delete(account.partition);
     else if (win) {
