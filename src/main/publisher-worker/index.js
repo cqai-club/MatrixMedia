@@ -1,6 +1,7 @@
 "use strict";
 
 import { app } from "electron";
+import fs from "fs";
 import path from "path";
 import util from "util";
 import pie from "puppeteer-in-electron";
@@ -26,6 +27,20 @@ console.warn = log;
 console.error = log;
 
 const dataRoot = path.resolve(option("--data-dir") || path.join(app.getPath("appData"), "eBao Studio", "publisher"));
+const bootTraceEnabled = process.env.EBAO_PUBLISHER_WORKER_BOOT_TRACE === "1";
+function traceBoot(stage) {
+  if (!bootTraceEnabled) return;
+  try {
+    fs.mkdirSync(dataRoot, { recursive: true });
+    fs.appendFileSync(path.join(dataRoot, "boot-trace.log"), `${stage}\n`);
+  } catch {
+    // Startup diagnostics must never prevent the Worker from running.
+  }
+}
+
+traceBoot("entry");
+app.on("before-quit", () => traceBoot("before-quit"));
+process.once("exit", code => traceBoot(`exit:${code}`));
 app.name = "ebao-publisher-worker";
 app.setPath("userData", path.join(dataRoot, "user-data"));
 process.env.MATRIXMEDIA_DATA_DIR = path.join(dataRoot, "matrix-data");
@@ -37,19 +52,24 @@ app.on("window-all-closed", () => {
 
 async function main() {
   if (!process.argv.includes("--publisher-worker")) {
+    traceBoot("invalid-launch");
     log("Publisher Worker 只能由 e宝工坊启动");
     app.exit(2);
     return;
   }
   if (process.platform === "darwin" && app.dock) app.dock.hide();
   if (!app.requestSingleInstanceLock()) {
+    traceBoot("lock-denied");
     process.stderr.write("Publisher Worker 已在运行\n");
     app.exit(2);
     return;
   }
+  traceBoot("lock");
   await initializeElectronRuntime({ app, pie, logger: { log } });
+  traceBoot("electron-ready");
   const service = new PublisherWorkerService(dataRoot);
   service.start();
+  traceBoot("service-ready");
   const handlers = {
     "system.handshake": () => ({
       protocolVersion: 2,
@@ -60,6 +80,7 @@ async function main() {
     "system.capabilities": () => service.capabilities(),
     "system.health": () => service.health(),
     "system.shutdown": () => {
+      traceBoot("shutdown");
       setImmediate(() => { void service.dispose().finally(() => app.quit()); });
       return { ok: true };
     },
@@ -78,14 +99,17 @@ async function main() {
     "submissions.openTarget": params => openSubmissionTarget(service, params),
   };
   const stopProtocol = startNdjsonServer({ input: process.stdin, output: process.stdout, handlers });
-  process.stdin.resume();
   process.stdin.once("end", () => {
+    traceBoot("stdin-end");
     stopProtocol();
     void service.dispose().finally(() => app.quit());
   });
+  traceBoot("protocol-ready");
+  process.stdin.resume();
 }
 
 main().catch(error => {
+  traceBoot("startup-error");
   log("Publisher Worker 启动失败:", error && error.stack ? error.stack : error);
   app.exit(1);
 });
