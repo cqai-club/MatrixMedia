@@ -115,7 +115,8 @@ const root = path.join(__dirname, "..");
     const articleStub = articleFunctions.map(name => name === "runJuejinArticle"
       ? `export async function ${name}(account, submission, manifest) {
           globalThis.__articleDispatch = { account, submission, manifest };
-          return { exitCode: 0, status: 'draft', message: '已保存模拟草稿' };
+          return { exitCode: 0, status: 'draft', message: '已保存模拟草稿',
+            draftUrl: 'https://juejin.cn/editor/drafts/123456' };
         }`
       : `export async function ${name}() { throw new Error('browser dispatch is not expected'); }`).join("\n");
     const stubs = new Map([
@@ -172,6 +173,11 @@ const root = path.join(__dirname, "..");
     globalThis.__articleDispatch = null;
     await service.drain();
     assert.strictEqual(service.store.submission(stored.id).state, "completed");
+    assert.deepStrictEqual(service.store.submission(stored.id).result.results[0], {
+      exitCode: 0, status: "draft", message: "已保存模拟草稿",
+      draftUrl: "https://juejin.cn/editor/drafts/123456", accountId: juejinAccount.id,
+    });
+    assert.ok(!Object.hasOwn(service.store.listSubmissions().find(item => item.id === stored.id), "result"));
     assert.strictEqual(globalThis.__articleDispatch.submission.mode, "draft");
     assert.strictEqual(globalThis.__articleDispatch.account.id, juejinAccount.id);
     assert.strictEqual(globalThis.__articleDispatch.manifest.platformFields.juejin.category, "前端");

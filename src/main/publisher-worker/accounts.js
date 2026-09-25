@@ -242,16 +242,18 @@ export class PublisherAccounts {
     if (existing && !existing.isDestroyed()) {
       // Login and dashboard intentionally share one account window/session.
       // Reusing the window must still navigate to the action the user chose.
+      let navigationFailed = false;
       if (existing.webContents.getURL() !== url) {
         try {
           await existing.loadURL(url);
         } catch (error) {
+          navigationFailed = true;
           console.warn("[publisher-worker] 账号窗口导航失败:", error && error.message);
         }
       }
       if (existing.isMinimized()) existing.restore();
       existing.focus();
-      return { ok: true, reused: true };
+      return { ok: true, reused: true, navigationFailed };
     }
     const ses = session.fromPartition(account.partition);
     await applyAccountProxyToSession({
@@ -291,14 +293,16 @@ export class PublisherAccounts {
       },
     });
     if (debugAccountWindow) win.webContents.openDevTools({ mode: "detach" });
+    let navigationFailed = false;
     try {
       await win.loadURL(url);
     } catch (error) {
+      navigationFailed = true;
       // Creator sites frequently abort the initial navigation while redirecting
       // to their login host. MatrixMedia treats that as a usable open window.
       console.warn("[publisher-worker] 账号窗口加载发生重定向:", error && error.message);
     }
-    return { ok: true, reused: false };
+    return { ok: true, reused: false, navigationFailed };
   }
 
   legacyImportSource() {

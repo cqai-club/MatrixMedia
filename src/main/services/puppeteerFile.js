@@ -703,7 +703,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
         },
       });
       activeWin = win;
-      registerPublishWindow(data.partition, win);
+      registerPublishWindow(data.partition, win, data.submissionId);
       // 必须在首次导航前安装 closed 监听。否则页面加载中关窗会让任务
       // 悬挂，且可能留下账号窗口占用记录。
       win.on("closed", () => {

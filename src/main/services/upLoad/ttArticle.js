@@ -76,7 +76,7 @@ export default async function publishToutiaoArticle(page, data, window, event) {
       const result = await confirmToutiaoDraftAutosave(page, data.data.title, 30000, saveObserver,
         { expectedHtml: html, coverUrl });
       if (!result.confirmed) throw new Error(result.reason);
-      await finishArticle(page, data, window, event, mode, before, true);
+      await finishArticle(page, data, window, event, mode, before, true, result.draftUrl);
       return;
     }
     const notices = await captureArticleNotices(page);

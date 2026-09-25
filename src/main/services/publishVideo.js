@@ -143,6 +143,7 @@ async function runSingleFilePublishInner(
     // imported per-account proxy. Keep those values intact through the shared
     // upload pipeline instead of applying the legacy phone-name normalization.
     publisherWorker: Boolean(v.publisherWorker),
+    ...(v.publisherWorker && v.submissionId ? { submissionId: v.submissionId } : {}),
     proxyOverride: v.proxyOverride,
     filePath: resolvedFile,
     pt: v.platform,

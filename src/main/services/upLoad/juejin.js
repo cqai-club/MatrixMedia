@@ -223,6 +223,16 @@ async function waitForPostConfirmResult(page) {
   }
 }
 
+export function canonicalJuejinDraftUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const match = /^\/editor\/drafts\/([a-z\d_-]{1,128})$/iu.exec(url.pathname);
+    if (url.origin !== "https://juejin.cn" || url.username || url.password
+      || url.port || url.hash || !match || match[1].toLowerCase() === "new") return "";
+    return `https://juejin.cn/editor/drafts/${match[1]}`;
+  } catch { return ""; }
+}
+
 async function savePublisherDraft(page) {
   // Never fall through to the publish button when the caller asked for a draft.
   // The editor can autosave or expose a dedicated save control depending on
@@ -235,15 +245,18 @@ async function savePublisherDraft(page) {
     return true;
   });
   await page.waitForTimeout(2500);
-  const confirmed = await page.evaluate(wasClicked => {
-    const url = location.pathname;
+  const result = await page.evaluate(wasClicked => {
     const status = String(document.body?.textContent || "");
-    return /\/editor\/drafts\/[^/]+/u.test(url) && !url.endsWith("/new")
-      && (wasClicked || /已保存|保存成功|自动保存/u.test(status));
+    return {
+      url: location.href,
+      saved: wasClicked || /已保存|保存成功|自动保存/u.test(status),
+    };
   }, clicked);
-  if (!confirmed) {
+  const draftUrl = result?.saved ? canonicalJuejinDraftUrl(result.url) : "";
+  if (!draftUrl) {
     throw new Error(clicked ? "未确认掘金草稿已保存" : "未找到掘金保存草稿按钮或自动保存确认");
   }
+  return draftUrl;
 }
 
 export default async function (page, data, window, event) {
@@ -262,10 +275,11 @@ export default async function (page, data, window, event) {
     await setCodeMirrorContent(page, content);
     if (data.publishToDraft === true) {
       publishStage = "保存草稿";
-      await savePublisherDraft(page);
+      const draftUrl = await savePublisherDraft(page);
       event.reply("puppeteerFile-done", {
         ...data,
         status: true,
+        draftUrl,
         message: "已转存掘金草稿，请到后台确认",
       });
       maybeClosePublishWindow(data, window);

@@ -242,10 +242,15 @@ export class PublisherWorkerService {
               closeWindowAfterPublish: true, useRealBrowser: false,
               useragent: publisherUserAgent(account.pt, ptConfig[account.pt]?.useragent),
               publisherWorker: true, proxyOverride: account.proxy,
+              submissionId: submission.id,
               publishOptions: { maxAttempts: 1 },
             }));
             request.sort((left, right) => left.platform === "视频号" ? -1 : right.platform === "视频号" ? 1 : 0);
-            for (const item of request) results.push(await runSingleFilePublish(item));
+            for (const item of request) {
+              const outcome = await runSingleFilePublish(item);
+              // 视频号会先执行，结果顺序不能用来推断历史记录里的目标账号。
+              results.push({ ...outcome, accountId: item.phone });
+            }
           } else {
             const content = readContentPackage(submission.snapshotDirectory, submission.contentId, submission.revision, submission.contentType, false);
             const preparedTargets = accounts.map(account => {
@@ -259,31 +264,32 @@ export class PublisherWorkerService {
               return { account, effective };
             });
             for (const { account, effective } of preparedTargets) {
+              let outcome;
               if (account.platform === "juejin" && submission.contentType === "article") {
-                results.push(await runJuejinArticle(account, submission, effective));
+                outcome = await runJuejinArticle(account, submission, effective);
               } else if (account.platform === "blbl" && submission.contentType === "article") {
-                results.push(await runBilibiliArticle(account, submission, effective));
+                outcome = await runBilibiliArticle(account, submission, effective);
               } else if (account.platform === "tt" && submission.contentType === "article") {
-                const outcome = await runToutiaoArticle(account, submission, effective);
+                outcome = await runToutiaoArticle(account, submission, effective);
                 if (outcome.exitCode !== 0 && hasOpenPublishWindow(account.partition)
                   && !String(outcome.message || "").includes(TOUTIAO_DRAFT_WINDOW_NOTICE)) {
                   outcome.message = `${outcome.message || "头条草稿保存未确认"}；${TOUTIAO_DRAFT_WINDOW_NOTICE}`;
                 }
-                results.push(outcome);
               } else if (account.platform === "bjh" && submission.contentType === "article") {
-                results.push(await runBaijiahaoArticle(account, submission, effective));
+                outcome = await runBaijiahaoArticle(account, submission, effective);
               } else if (account.platform === "wxmp" && submission.contentType === "article") {
-                results.push(await runWechatOfficialArticle(account, submission, effective,
-                  this.accounts.wechatCredentials(account.id), this.accounts.wechat));
+                outcome = await runWechatOfficialArticle(account, submission, effective,
+                  this.accounts.wechatCredentials(account.id), this.accounts.wechat);
               } else if (account.platform === "xhs" && submission.contentType === "image-note") {
-                results.push(await runXhsImageNote(account, submission, effective));
+                outcome = await runXhsImageNote(account, submission, effective);
               } else if (account.platform === "ks" && submission.contentType === "image-note") {
-                results.push(await runKuaishouImageNote(account, submission, effective));
+                outcome = await runKuaishouImageNote(account, submission, effective);
               } else if (account.platform === "dy" && submission.contentType === "image-note") {
-                results.push(await runDouyinImageNote(account, submission, effective));
+                outcome = await runDouyinImageNote(account, submission, effective);
               } else {
-                results.push({ exitCode: 1, status: "unsupported", message: "平台适配器尚未开放" });
+                outcome = { exitCode: 1, status: "unsupported", message: "平台适配器尚未开放" };
               }
+              results.push({ ...outcome, accountId: account.id });
             }
           }
           const result = {

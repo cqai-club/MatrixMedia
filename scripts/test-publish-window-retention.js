@@ -204,6 +204,14 @@ async function waitForWindow(previousCount) {
     await service.drain();
     assert.strictEqual(service.store.submission(allowed.id).state, "completed");
     assert.deepStrictEqual(globalThis.__publishedAccounts, [dy.id, tt.id]);
+    const sph = service.store.addAccount({ displayName: "视频号账号", platform: "sph", pt: "视频号" });
+    const multi = service.store.createSubmission({
+      workId: "multi", file: "/tmp/unused.mp4", title: "多平台顺序", mode: "draft",
+    }, [dy, sph]);
+    await service.drain();
+    assert.deepStrictEqual(multi.targets.map(item => item.accountId), [dy.id, sph.id]);
+    assert.deepStrictEqual(service.store.submission(multi.id).result.results.map(item => item.accountId), [sph.id, dy.id]);
+    assert.deepStrictEqual(globalThis.__publishedAccounts, [dy.id, tt.id, sph.id, dy.id]);
     const onShutdown = new FakeWindow();
     tools.registerPublishWindow(tt.partition, onShutdown);
     await service.dispose();

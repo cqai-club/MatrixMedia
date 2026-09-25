@@ -7,6 +7,7 @@ import pie from "puppeteer-in-electron";
 import { initializeElectronRuntime } from "../services/electronStartup.js";
 import { startNdjsonServer } from "./protocol.js";
 import { PublisherWorkerService } from "./service.js";
+import { openSubmissionTarget } from "./submission-open-target.js";
 
 function option(name) {
   const direct = process.argv.find(arg => arg.startsWith(`${name}=`));
@@ -74,6 +75,7 @@ async function main() {
     "submissions.create": params => service.createSubmission(params),
     "submissions.list": () => service.store.listSubmissions(),
     "submissions.delete": params => service.deleteSubmission(params),
+    "submissions.openTarget": params => openSubmissionTarget(service, params),
   };
   const stopProtocol = startNdjsonServer({ input: process.stdin, output: process.stdout, handlers });
   process.stdin.resume();

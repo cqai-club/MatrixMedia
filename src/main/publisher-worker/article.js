@@ -59,6 +59,9 @@ function runWorkerTask(payload, mode) {
             exitCode: response.status === true ? 0 : 1,
             status: response.status === true ? mode === "draft" ? "draft" : "success" : "failed",
             message: response.message || "",
+            ...(response.status === true && mode === "draft"
+              && ["掘金", "头条"].includes(payload.pt) && typeof response.draftUrl === "string"
+              ? { draftUrl: response.draftUrl } : {}),
           });
         },
       }, () => {
@@ -81,6 +84,7 @@ export function runJuejinArticle(account, submission, manifest) {
   const fields = manifest.platformFields?.juejin || {};
   const payload = {
     taskId,
+    submissionId: submission.id,
     textType: "article",
     bookName: manifest.title,
     textOtherName: manifest.title,
@@ -167,6 +171,7 @@ function runImageNoteBrowserTask(account, submission, manifest, imagePaths, url)
   const cfg = ptConfig[account.pt];
   const payload = {
     taskId: Date.now() + Math.random(),
+    submissionId: submission.id,
     textType: "image-note",
     bookName: manifest.title,
     imagePaths,
@@ -200,6 +205,7 @@ export function runBilibiliArticle(account, submission, manifest) {
     : "";
   const payload = {
     taskId: Date.now() + Math.random(),
+    submissionId: submission.id,
     textType: "article",
     bookName: manifest.title,
     data: {
@@ -231,6 +237,7 @@ function runWebArticle(account, submission, manifest, url) {
   const usedImages = new Set(articleImageIds(manifest));
   const payload = {
     taskId: Date.now() + Math.random(),
+    submissionId: submission.id,
     textType: "article",
     bookName: manifest.title,
     data: {

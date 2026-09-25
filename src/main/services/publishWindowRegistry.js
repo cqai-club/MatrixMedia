@@ -4,6 +4,7 @@
 // 发布窗口也必须占用该账号，直到用户亲自关闭窗口。
 const windowsByPartition = new Map();
 const closeCallbacksByPartition = new Map();
+const submissionIdsByWindow = new WeakMap();
 
 export function shouldKeepToutiaoArticleDraftWindow(data) {
   return data?.publisherWorker === true && data.pt === "头条"
@@ -12,7 +13,7 @@ export function shouldKeepToutiaoArticleDraftWindow(data) {
 
 export const TOUTIAO_DRAFT_WINDOW_NOTICE = "头条草稿窗口已保留，可核查后手动关闭；关闭前该账号不能再次提交。";
 
-export function registerPublishWindow(partition, win) {
+export function registerPublishWindow(partition, win, submissionId = "") {
   if (!win) return;
   const key = partition || "";
   let windows = windowsByPartition.get(key);
@@ -21,6 +22,7 @@ export function registerPublishWindow(partition, win) {
     windowsByPartition.set(key, windows);
   }
   windows.add(win);
+  if (typeof submissionId === "string" && submissionId) submissionIdsByWindow.set(win, submissionId);
   // 在首次导航前注册，加载或重定向期间关窗也不会留下过期占用。
   win.once("closed", () => unregisterPublishWindow(key, win));
 }
@@ -29,6 +31,7 @@ export function unregisterPublishWindow(partition, win) {
   const windows = windowsByPartition.get(partition);
   if (!windows) return;
   windows.delete(win);
+  submissionIdsByWindow.delete(win);
   if (windows.size === 0) {
     windowsByPartition.delete(partition);
     const callbacks = closeCallbacksByPartition.get(partition);
@@ -65,6 +68,20 @@ function hasLiveWindow(partition) {
 
 export function hasOpenPublishWindow(partition) {
   return Boolean(partition) && hasLiveWindow(partition);
+}
+
+/** Bring a retained review window forward without changing its page or session. */
+export function focusOpenPublishWindow(partition, submissionId) {
+  if (!partition || !submissionId || !hasLiveWindow(partition)) return false;
+  const windows = windowsByPartition.get(partition);
+  for (const win of windows || []) {
+    if (win.isDestroyed() || submissionIdsByWindow.get(win) !== submissionId) continue;
+    if (win.isMinimized?.()) win.restore();
+    win.show?.();
+    win.focus();
+    return true;
+  }
+  return false;
 }
 
 export function hasAnyOpenPublishWindow() {

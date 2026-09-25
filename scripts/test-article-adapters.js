@@ -27,6 +27,11 @@ try {
     bundle: true, platform: "node", format: "cjs",
     outfile: path.join(bundleDir, "blblArticle-test.cjs"), external: ["electron"],
   });
+  buildSync({
+    entryPoints: [path.join(root, "src/main/services/upLoad/juejin.js")],
+    bundle: true, platform: "node", format: "cjs",
+    outfile: path.join(bundleDir, "juejinArticle-test.cjs"), external: ["electron"],
+  });
   const { markdownToArticleHtml } = require(path.join(bundleDir, "blblArticle-test.cjs"));
   const formatted = markdownToArticleHtml("# 标题\n\n**重点**与[链接](https://example.com/a?x=1&y=2)\n\n- 第一项\n- 第二项\n\n> 引用");
   assert.match(formatted, /<h1>标题<\/h1>/u);
@@ -65,7 +70,31 @@ try {
     }],
   };
   const tools = require(path.join(bundleDir, "articleWebTools.cjs"));
+  const { canonicalJuejinDraftUrl, default: publishJuejinArticle } =
+    require(path.join(bundleDir, "juejinArticle-test.cjs"));
   const upload = require(path.join(bundleDir, "articleImageUpload.cjs"));
+  assert.strictEqual(canonicalJuejinDraftUrl("https://juejin.cn/editor/drafts/123456?source=editor"),
+    "https://juejin.cn/editor/drafts/123456");
+  for (const url of ["https://juejin.cn/editor/drafts/new", "https://juejin.cn/editor/drafts",
+    "https://juejin.cn/editor/drafts/123/extra", "https://evil.example/editor/drafts/123",
+    "http://juejin.cn/editor/drafts/123", "https://juejin.cn/editor/drafts/%2Fadmin",
+    "https://juejin.cn:8443/editor/drafts/123", "https://juejin.cn/editor/drafts/123#section",
+    `https://juejin.cn/editor/drafts/${"a".repeat(129)}`]) {
+    assert.strictEqual(canonicalJuejinDraftUrl(url), "", `unsafe Juejin draft URL: ${url}`);
+  }
+  assert.strictEqual(tools.canonicalToutiaoDraftUrl(
+    "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1&token=private"),
+  "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1");
+  for (const url of ["https://mp.toutiao.com/profile_v4/graphic/publish",
+    "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=",
+    "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=1&pgc_id=2",
+    "https://evil.example/profile_v4/graphic/publish?pgc_id=1",
+    "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=%2Fadmin",
+    "https://mp.toutiao.com:8443/profile_v4/graphic/publish?pgc_id=1",
+    "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=1#section",
+    `https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=${"a".repeat(129)}`]) {
+    assert.strictEqual(tools.canonicalToutiaoDraftUrl(url), "", `unsafe Toutiao draft URL: ${url}`);
+  }
   const pageAt = (url, notices = []) => ({
     waitForFunction: async (callback, _options, ...args) => {
       global.location = { href: url };
@@ -82,6 +111,30 @@ try {
 
   (async () => {
     try {
+      const juejinReplies = [];
+      let juejinStep = 0;
+      await publishJuejinArticle({
+        waitForSelector: async () => {},
+        click: async selector => assert.strictEqual(selector, ".header .title-input"),
+        type: async () => {},
+        keyboard: { press: async () => {} },
+        waitForTimeout: async () => {},
+        evaluate: async () => {
+          juejinStep++;
+          return juejinStep === 4
+            ? { url: "https://juejin.cn/editor/drafts/123456?source=editor", saved: true }
+            : true;
+        },
+      }, {
+        data: { title: "测试标题", content: "完整测试正文" },
+        publishToDraft: true, closeWindowAfterPublish: false,
+      }, null, { reply: (channel, payload) => juejinReplies.push({ channel, payload }) });
+      assert.strictEqual(juejinStep, 4, "掘金草稿流程不能进入发布弹窗");
+      assert.strictEqual(juejinReplies[0].channel, "puppeteerFile-done");
+      assert.strictEqual(juejinReplies[0].payload.status, true);
+      assert.strictEqual(juejinReplies[0].payload.draftUrl,
+        "https://juejin.cn/editor/drafts/123456");
+
       await build(toutiaoAdapterBuild);
       const publishToutiaoArticle = require(path.join(bundleDir, "ttArticle-test.cjs")).default;
       const before = "https://mp.toutiao.com/profile_v4/graphic/publish";
@@ -207,13 +260,14 @@ try {
       assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList(false), "测试标题", 1, save)).confirmed, false);
       assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList("测试标题加后缀"), "测试标题", 1, save)).confirmed, false);
       const reopenedDraft = ({ body = "开头文字不可丢失的中段结尾文字",
-        cover = "https://example.com/cover.png", titleCount = 1 } = {}) => {
+        cover = "https://example.com/cover.png", titleCount = 1, currentUrl = "" } = {}) => {
         const editUrl = "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1";
         const titleNode = () => ({
           textContent: "测试标题", children: [],
           getBoundingClientRect: () => ({ width: 120, height: 25 }),
         });
         const editPage = {
+          url: () => currentUrl || editUrl,
           waitForSelector: async () => {},
           evaluate: async () => "[data-ebao-article-editor='true']",
           waitForFunction: async (callback, _options, ...args) => {
@@ -256,8 +310,12 @@ try {
       };
       const reopenOptions = { expectedHtml: "<p>开头文字</p><p>不可丢失的中段</p><p>结尾文字</p>",
         coverUrl: "https://example.com/cover.png" };
-      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(reopenedDraft(), "测试标题", 1,
-        save, reopenOptions)).confirmed, true);
+      assert.deepStrictEqual(await tools.confirmToutiaoDraftAutosave(reopenedDraft(), "测试标题", 1,
+        save, reopenOptions), { confirmed: true, draftUrl:
+          "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1" });
+      assert.deepStrictEqual(await tools.confirmToutiaoDraftAutosave(reopenedDraft({ currentUrl:
+        "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-2" }), "测试标题", 1,
+        save, reopenOptions), { confirmed: true });
       assert.match((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ body: "开头文字结尾文字" }),
         "测试标题", 1, save, reopenOptions)).reason, /未确认完整正文/u);
       assert.match((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ cover: "" }),
@@ -659,6 +717,16 @@ try {
       assert.strictEqual(calls[0].status, false);
       assert.strictEqual(calls[0].publishAbnormal, true);
       assert.strictEqual(calls[0].needsAttention, true);
+      await tools.finishArticle(pageAt(before), { pt: "头条", closeWindowAfterPublish: false }, null,
+        { reply: (_channel, payload) => calls.push(payload) }, "draft", before, true,
+        "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1");
+      assert.strictEqual(calls[1].draftUrl,
+        "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1");
+      await tools.finishArticle(pageAt(before), { pt: "头条", closeWindowAfterPublish: false }, null,
+        { reply: (_channel, payload) => calls.push(payload) }, "publish", before, true,
+        "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1");
+      assert.strictEqual(calls[2].status, true);
+      assert.strictEqual(calls[2].draftUrl, undefined);
 
       const fileInput = (accept, parentElement = null, id = "") => {
         const attributes = { accept };

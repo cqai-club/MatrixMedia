@@ -440,6 +440,19 @@ export async function confirmToutiaoInitialDraftAutosave(page, title, saveObserv
   } catch { return { confirmed: false, reason: "头条初始草稿尚未在页面确认，未继续填写正文" }; }
 }
 
+export function canonicalToutiaoDraftUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const ids = url.searchParams.getAll("pgc_id");
+    if (url.origin !== "https://mp.toutiao.com" || url.username || url.password || url.port || url.hash
+      || url.pathname !== "/profile_v4/graphic/publish" || ids.length !== 1
+      || !/^[a-z\d_-]{1,128}$/iu.test(ids[0])) return "";
+    const target = new URL("https://mp.toutiao.com/profile_v4/graphic/publish");
+    target.searchParams.set("pgc_id", ids[0]);
+    return target.href;
+  } catch { return ""; }
+}
+
 /** Toutiao autosaves; a stale failure toast can coexist with a newer save. */
 export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000, saveObserver,
   { expectedHtml, coverUrl } = {}) {
@@ -491,9 +504,7 @@ export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000, 
     let editHref = "";
     try {
       const candidate = new URL(entry.editHref, "https://mp.toutiao.com");
-      if (candidate.origin === "https://mp.toutiao.com"
-        && candidate.pathname === "/profile_v4/graphic/publish"
-        && candidate.searchParams.has("pgc_id")) editHref = candidate.href;
+      if (canonicalToutiaoDraftUrl(candidate.href)) editHref = candidate.href;
     } catch { /* The edit control may navigate through a click handler. */ }
 
     const browser = typeof page.browser === "function" ? page.browser() : null;
@@ -502,8 +513,7 @@ export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000, 
       if (previousTargets.has(target)) return false;
       try {
         const url = new URL(target.url());
-        return url.origin === "https://mp.toutiao.com"
-          && url.pathname === "/profile_v4/graphic/publish" && url.searchParams.has("pgc_id");
+        return Boolean(canonicalToutiaoDraftUrl(url.href));
       } catch { return false; }
     };
     const popup = browser?.waitForTarget && browser?.targets
@@ -545,7 +555,11 @@ export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000, 
         return samePath.length === 1;
       }, { timeout: 15000 }, coverUrl);
     }
-    return { confirmed: true };
+    const currentDraftUrl = canonicalToutiaoDraftUrl(editPage.url?.());
+    const expectedDraftUrl = canonicalToutiaoDraftUrl(editHref);
+    const draftUrl = currentDraftUrl && (!expectedDraftUrl || currentDraftUrl === expectedDraftUrl)
+      ? currentDraftUrl : "";
+    return { confirmed: true, ...(draftUrl ? { draftUrl } : {}) };
   } catch {
     const reason = verificationStage === "cover" ? "头条草稿重新打开后未确认封面"
       : verificationStage === "body" ? "头条草稿重新打开后未确认完整正文"
@@ -623,7 +637,7 @@ export async function confirmPlatformOutcome(page, kind, beforeUrl, priorNotices
   } catch { return false; }
 }
 
-export async function finishArticle(page, data, window, event, kind, beforeUrl, confirmed) {
+export async function finishArticle(page, data, window, event, kind, beforeUrl, confirmed, draftUrl = "") {
   if (!confirmed) {
     await replyPublishFailure({
       page, data, window, event,
@@ -636,6 +650,7 @@ export async function finishArticle(page, data, window, event, kind, beforeUrl, 
   await replyPublishOutcome({
     page, data, window, event, urlBefore: "", isDraftMode: kind === "draft", waitMs: 0,
     successMessage: kind === "draft" ? "平台草稿已保存" : "平台已确认文章提交",
+    extraPayload: kind === "draft" && draftUrl ? { draftUrl } : {},
   });
 }
 
