@@ -60,8 +60,8 @@ class FakeWindow extends EventEmitter {
   let { service, calls } = makeService(saved, juejin);
   assert.deepStrictEqual(await openSubmissionTarget(service, { submissionId: id.submission, accountId: id.juejin }), { kind: "draft" });
   assert.deepStrictEqual(calls.at(-1), { url: "https://juejin.cn/editor/drafts/123456" });
-  assert.deepStrictEqual(await openSubmissionTarget(service, { submissionId: id.submission, accountId: id.juejin, listOnly: true }), { kind: "backend" });
-  assert.deepStrictEqual(calls.at(-1), { url: "https://juejin.cn/login" });
+  assert.deepStrictEqual(await openSubmissionTarget(service, { submissionId: id.submission, accountId: id.juejin, listOnly: true }), { kind: "draft-list" });
+  assert.deepStrictEqual(calls.at(-1), { url: "https://juejin.cn/creator/content/article/drafts" });
 
   const invalidUrls = [
     "https://juejin.cn.evil.example/editor/drafts/123456",
@@ -76,7 +76,7 @@ class FakeWindow extends EventEmitter {
     const unsafe = makeSubmission("juejin", id.juejin, { result: { results: [
       { accountId: id.juejin, exitCode: 0, status: "draft", draftUrl },
     ] } });
-    assert.strictEqual(resolveSubmissionOpenTarget(unsafe, unsafe.targets[0], juejin).kind, "backend", draftUrl);
+    assert.strictEqual(resolveSubmissionOpenTarget(unsafe, unsafe.targets[0], juejin).kind, "draft-list", draftUrl);
   }
   for (const outcome of [
     { accountId: id.other, exitCode: 0, status: "draft", draftUrl: "https://juejin.cn/editor/drafts/123456" },
@@ -85,7 +85,7 @@ class FakeWindow extends EventEmitter {
     { exitCode: 0, status: "draft", draftUrl: "https://juejin.cn/editor/drafts/123456" },
   ]) {
     const oldOrFailed = makeSubmission("juejin", id.juejin, { result: { results: [outcome] } });
-    assert.strictEqual(resolveSubmissionOpenTarget(oldOrFailed, oldOrFailed.targets[0], juejin).kind, "backend");
+    assert.strictEqual(resolveSubmissionOpenTarget(oldOrFailed, oldOrFailed.targets[0], juejin).kind, "draft-list");
   }
   const ttDraft = makeSubmission("tt", id.toutiao, { result: { results: [
     { accountId: id.toutiao, exitCode: 0, status: "draft", draftUrl: "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1&from=list" },
@@ -140,9 +140,20 @@ class FakeWindow extends EventEmitter {
     calls.push({ url });
     return { navigationFailed: calls.filter(item => item.url).length === 1 };
   };
-  assert.deepStrictEqual(await openSubmissionTarget(service, { submissionId: id.submission, accountId: id.juejin }), { kind: "backend" });
+  assert.deepStrictEqual(await openSubmissionTarget(service, { submissionId: id.submission, accountId: id.juejin }), { kind: "draft-list" });
   assert.deepStrictEqual(calls.filter(item => item.url), [
-    { url: "https://juejin.cn/editor/drafts/123456" }, { url: "https://juejin.cn/login" },
+    { url: "https://juejin.cn/editor/drafts/123456" },
+    { url: "https://juejin.cn/creator/content/article/drafts" },
+  ]);
+  service.accounts.open = async (_account, url) => {
+    calls.push({ url });
+    return { navigationFailed: true };
+  };
+  await assert.rejects(openSubmissionTarget(service, { submissionId: id.submission, accountId: id.juejin }), error => error.code === "navigation-failed");
+  assert.deepStrictEqual(calls.filter(item => item.url).slice(-3), [
+    { url: "https://juejin.cn/editor/drafts/123456" },
+    { url: "https://juejin.cn/creator/content/article/drafts" },
+    { url: "https://juejin.cn/creator/home" },
   ]);
   ({ service, calls } = makeService(ttDraft, toutiao));
   service.accounts.open = async (_account, url) => {

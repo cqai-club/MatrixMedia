@@ -7,10 +7,13 @@ import { PublisherProtocolError } from "./protocol.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const DRAFT_LISTS = {
-  // Toutiao's article adapter navigates here in the account session and
-  // verifies the saved draft. Juejin's draft-list URL exists only in an old
-  // design document, so it is deliberately not selected here.
+  // Both routes were observed in the corresponding logged-in account session.
+  juejin: { article: "https://juejin.cn/creator/content/article/drafts" },
   tt: { article: "https://mp.toutiao.com/profile_v4/manage/draft" },
+};
+const BACKEND_ENTRIES = {
+  // The configured /login redirects a logged-in Juejin account to the feed.
+  juejin: "https://juejin.cn/creator/home",
 };
 // These are the already configured content management pages. A route that
 // does not cover the submission's content type must use the platform entry.
@@ -63,7 +66,7 @@ export function resolveSubmissionOpenTarget(submission, target, account, { allow
     && CONTENT_LIST_TYPES[platform]?.includes(contentType) && cfg.listIndex) {
     return { kind: "content-list", url: cfg.listIndex };
   }
-  return { kind: "backend", url: cfg.index };
+  return { kind: "backend", url: BACKEND_ENTRIES[platform] || cfg.index };
 }
 
 export async function openSubmissionTarget(service, params) {
