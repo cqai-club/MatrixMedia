@@ -109,7 +109,10 @@ const { pathToFileURL } = require("url");
     assert.strictEqual(store.listAccounts()[0].appId, undefined);
     assert.strictEqual(store.listAccounts()[0].credentialCiphertext, undefined);
     assert.deepStrictEqual(platformCapabilities().find(item => item.platform === "wxmp").modes.article, ["publish", "draft"]);
-    assert.strictEqual(fs.statSync(path.join(temporary, "store", "accounts.json")).mode & 0o777, 0o600);
+    // Windows reports synthesized POSIX mode bits; access is governed by its ACL.
+    if (process.platform !== "win32") {
+      assert.strictEqual(fs.statSync(path.join(temporary, "store", "accounts.json")).mode & 0o777, 0o600);
+    }
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }
