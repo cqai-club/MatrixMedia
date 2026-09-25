@@ -7,7 +7,7 @@ const closeCallbacksByPartition = new Map();
 
 export function shouldKeepToutiaoArticleDraftWindow(data) {
   return data?.publisherWorker === true && data.pt === "头条"
-    && ["article", "image-note"].includes(data.textType) && data.publishToDraft === true;
+    && data.textType === "article" && data.publishToDraft === true;
 }
 
 export const TOUTIAO_DRAFT_WINDOW_NOTICE = "头条草稿窗口已保留，可核查后手动关闭；关闭前该账号不能再次提交。";

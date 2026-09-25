@@ -102,7 +102,6 @@ const draft = {
   publisherWorker: true, pt: "头条", textType: "article",
   publishToDraft: true, closeWindowAfterPublish: true,
 };
-const imageDraft = { ...draft, textType: "image-note" };
 const store = {
   account(id) {
     return id === "a" ? { id, partition: partitionA, platform: "tt", pt: "头条" }
@@ -166,18 +165,6 @@ async function waitForWindow(previousCount) {
   assert.doesNotThrow(() => accounts.assertNoOpenWindow("a"));
   assert.doesNotThrow(() => accounts.assertIdle("a"));
 
-  const imageWindow = new FakeWindow();
-  tools.registerPublishWindow(partitionA, imageWindow);
-  const imageReplies = [];
-  await tools.replyPublishFailure({
-    page: null, data: imageDraft, window: imageWindow,
-    event: { reply: (_channel, payload) => imageReplies.push(payload) },
-    message: "微头条草稿未确认",
-  });
-  assert.strictEqual(imageWindow.isDestroyed(), false);
-  assert.match(imageReplies[0].message, /窗口已保留/u);
-  imageWindow.close();
-
   const serviceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ebao-window-retention-"));
   try {
     const service = new tools.PublisherWorkerService(serviceRoot);
@@ -191,6 +178,16 @@ async function waitForWindow(previousCount) {
     await service.drain();
     assert.strictEqual(service.store.submission(blocked.id).state, "failed");
     assert.match(service.store.submission(blocked.id).message, /未开始/u);
+    assert.deepStrictEqual(globalThis.__publishedAccounts, []);
+
+    const xhs = service.store.addAccount({ displayName: "小红书账号", platform: "xhs", pt: "小红书" });
+    const oldImageNote = service.store.createSubmission({
+      contentType: "image-note", contentId: "11111111-1111-4111-8111-111111111111", revision: 1,
+      snapshotDirectory: "/tmp/unused-image-note", title: "旧图文", mode: "draft",
+    }, [xhs, tt]);
+    await service.drain();
+    assert.strictEqual(service.store.submission(oldImageNote.id).state, "failed");
+    assert.match(service.store.submission(oldImageNote.id).message, /头条账号当前不支持.*未开始/u);
     assert.deepStrictEqual(globalThis.__publishedAccounts, []);
 
     const other = service.store.createSubmission({

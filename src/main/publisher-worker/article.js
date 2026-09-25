@@ -118,15 +118,7 @@ export async function runXhsImageNote(account, submission, manifest) {
 const IMAGE_NOTE_URLS = {
   dy: "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   ks: "https://cp.kuaishou.com/article/publish/video?tabType=2",
-  tt: "https://mp.toutiao.com/profile_v4/weitoutiao/publish",
 };
-
-export function runToutiaoImageNote(account, submission, manifest) {
-  if (account.platform !== "tt" || submission.mode !== "draft") {
-    throw new PublisherProtocolError("unsupported-platform", "头条微头条暂只支持转存草稿");
-  }
-  return runImageNoteTask(account, submission, manifest, IMAGE_NOTE_URLS.tt);
-}
 
 export function runKuaishouImageNote(account, submission, manifest) {
   if (account.platform !== "ks" || submission.mode !== "draft") {

@@ -35,7 +35,6 @@ async function main() {
     for (const asset of assets) fs.writeFileSync(path.join(snapshotDirectory, "assets", asset.id), asset.id);
     const manifest = { title: "图文标题", body: "图文正文", tags: ["旅行"], creativeStatement: "none", assets };
     const platforms = [
-      ["tt", "头条", actions.runToutiaoImageNote, "/profile_v4/weitoutiao/publish"],
       ["ks", "快手", actions.runKuaishouImageNote, "tabType=2"],
       ["dy", "抖音", actions.runDouyinImageNote, "default-tab=3"],
     ];
@@ -63,7 +62,7 @@ async function main() {
     let retainedTask;
     let retainedReply;
     globalThis.__imageTask = (payload, event) => { retainedTask = payload; retainedReply = event.reply; };
-    const retained = actions.runToutiaoImageNote({ platform: "tt", pt: "头条", partition: "persist:tt", id: "tt" },
+    const retained = actions.runKuaishouImageNote({ platform: "ks", pt: "快手", partition: "persist:ks", id: "ks" },
       { snapshotDirectory, mode: "draft" }, manifest);
     retainedReply("puppeteerFile-done", { taskId: retainedTask.taskId, status: false, needsAttention: true, message: "待核查" });
     assert.strictEqual((await retained).status, "unknown");

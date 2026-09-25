@@ -13,7 +13,7 @@ import { accepts, platformCapabilities } from "./capabilities.js";
 import { captureContentPackage, projectContentForPlatform, readContentPackage, removeSubmissionSnapshot } from "./content-package.js";
 import {
   runBilibiliArticle, runJuejinArticle, runXhsImageNote, runToutiaoArticle,
-  runToutiaoImageNote, runKuaishouImageNote, runDouyinImageNote,
+  runKuaishouImageNote, runDouyinImageNote,
   runBaijiahaoArticle, runWechatOfficialArticle,
 } from "./article.js";
 import { validateTargetContent } from "./target-content.js";
@@ -191,6 +191,16 @@ export class PublisherWorkerService {
           this.store.updateSubmission(submission.id, { state: "failed", finishedAt: new Date().toISOString(), message: "目标账号已被删除" });
           continue;
         }
+        const capabilities = this.capabilities();
+        const unavailable = accounts.find(account => !accepts(capabilities, account.platform,
+          submission.contentType || "video", submission.mode));
+        if (unavailable) {
+          this.store.updateSubmission(submission.id, {
+            state: "failed", finishedAt: new Date().toISOString(),
+            message: `${unavailable.displayName}当前不支持此内容类型或提交方式；本次提交未开始，请重新选择发布目标`,
+          });
+          continue;
+        }
         try {
           // 任务可能在先前窗口关闭前已经排队。整单在任何目标开始前检查，
           // 防止多平台提交只执行一部分或同账号窗口共享 session。
@@ -242,13 +252,6 @@ export class PublisherWorkerService {
                   this.accounts.wechatCredentials(account.id), this.accounts.wechat));
               } else if (account.platform === "xhs" && submission.contentType === "image-note") {
                 results.push(await runXhsImageNote(account, submission, effective));
-              } else if (account.platform === "tt" && submission.contentType === "image-note") {
-                const outcome = await runToutiaoImageNote(account, submission, effective);
-                if (outcome.exitCode !== 0 && hasOpenPublishWindow(account.partition)
-                  && !String(outcome.message || "").includes(TOUTIAO_DRAFT_WINDOW_NOTICE)) {
-                  outcome.message = `${outcome.message || "头条图文草稿保存未确认"}；${TOUTIAO_DRAFT_WINDOW_NOTICE}`;
-                }
-                results.push(outcome);
               } else if (account.platform === "ks" && submission.contentType === "image-note") {
                 results.push(await runKuaishouImageNote(account, submission, effective));
               } else if (account.platform === "dy" && submission.contentType === "image-note") {
