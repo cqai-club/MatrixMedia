@@ -28,7 +28,12 @@ build/publisher-worker/mac-universal/MatrixMedia Publisher Worker.app
 
 ## 私有协议
 
-Supervisor 通过 stdin/stdout 使用逐行 JSON（NDJSON）。stdout 只写响应帧，普通日志和 Chromium 日志写 stderr。请求形状：
+Supervisor 与 Worker 使用逐行 JSON（NDJSON），但传输通道按平台区分：
+
+- macOS 使用 Worker 的 stdin/stdout；stdout 只写协议响应帧。
+- Windows 由 Supervisor 先监听随机的本机命名管道，再通过 `EBAO_PUBLISHER_PIPE` 和 `EBAO_PUBLISHER_PIPE_TOKEN` 向 Worker 传入管道名与 64 个十六进制字符（32 字节）的令牌。Worker 连接后先发送 `{"auth":"<令牌>"}\n` 认证帧；Supervisor 验证成功后，双方才在同一管道连接上传输 NDJSON 请求和响应。Windows 缺少有效管道配置时启动失败，不回退到 stdin/stdout。
+
+普通日志在 stderr 可用时写入 stderr。Windows GUI 进程可能没有可用的 stderr 句柄，不能依赖它承载协议或启动诊断。认证帧和令牌不写入日志。认证完成后的请求形状：
 
 ```json
 {"id":"1","method":"system.handshake","params":{}}
@@ -60,7 +65,7 @@ Supervisor 通过 stdin/stdout 使用逐行 JSON（NDJSON）。stdout 只写响�
 - 未开始的 `queued` 提交在 Worker 重启后继续。
 - 已进入 `running` 但被中断的提交转为内部 `unknown`，不会自动重发。
 - Worker 内部全局串行执行，且 e宝模式将单次尝试限制为 1。
-- 登录或发布窗口关闭后 Worker 仍保持运行，继续处理同一提交的后续平台；只有 `system.shutdown` 或 Supervisor 关闭 stdin 才退出。
+- 登录或发布窗口关闭后 Worker 仍保持运行，继续处理同一提交的后续平台；`system.shutdown` 或 Supervisor 关闭协议连接（macOS stdin、Windows 命名管道）才触发退出。
 - 登录页/平台后台与同账号的排队、校验或执行任务互斥；发布窗口在 Worker 模式下保持隐藏。
 - 小红书固定使用内置 Electron Chromium；番茄视频区分“一键发布”和“保存草稿”，草稿模式绝不回退为直接发布。
 - UUID 或导入账号的 partition 不经过旧 GUI 的手机号后缀截断，账号代理随该 partition 一起复用。

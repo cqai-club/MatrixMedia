@@ -2,6 +2,7 @@
 
 import { app } from "electron";
 import fs from "fs";
+import net from "net";
 import path from "path";
 import util from "util";
 import pie from "puppeteer-in-electron";
@@ -18,7 +19,11 @@ function option(name) {
 }
 
 function log(...args) {
-  process.stderr.write(`${util.format(...args).replace(/\r?\n/gu, " ")}\n`);
+  try {
+    process.stderr?.write(`${util.format(...args).replace(/\r?\n/gu, " ")}\n`);
+  } catch {
+    // A packaged Windows GUI executable may have no usable stderr handle.
+  }
 }
 
 console.log = log;
@@ -27,6 +32,12 @@ console.warn = log;
 console.error = log;
 
 const dataRoot = path.resolve(option("--data-dir") || path.join(app.getPath("appData"), "eBao Studio", "publisher"));
+const publisherPipe = process.platform === "win32" ? process.env.EBAO_PUBLISHER_PIPE : "";
+const publisherPipeToken = process.platform === "win32" ? process.env.EBAO_PUBLISHER_PIPE_TOKEN : "";
+if (process.platform === "win32") {
+  delete process.env.EBAO_PUBLISHER_PIPE;
+  delete process.env.EBAO_PUBLISHER_PIPE_TOKEN;
+}
 const bootTraceEnabled = process.env.EBAO_PUBLISHER_WORKER_BOOT_TRACE === "1";
 function traceBoot(stage) {
   if (!bootTraceEnabled) return;
@@ -60,16 +71,28 @@ async function main() {
   if (process.platform === "darwin" && app.dock) app.dock.hide();
   if (!app.requestSingleInstanceLock()) {
     traceBoot("lock-denied");
-    process.stderr.write("Publisher Worker 已在运行\n");
+    log("Publisher Worker 已在运行");
     app.exit(2);
     return;
   }
   traceBoot("lock");
+  if (process.platform === "win32" && (!publisherPipe || !/^[0-9a-f]{64}$/iu.test(publisherPipeToken || ""))) {
+    traceBoot("pipe-config-invalid");
+    throw new Error("Publisher Worker 缺少有效的本地管道配置");
+  }
   await initializeElectronRuntime({ app, pie, logger: { log } });
   traceBoot("electron-ready");
   const service = new PublisherWorkerService(dataRoot);
   service.start();
   traceBoot("service-ready");
+  let stopProtocol = () => {};
+  let disposing = false;
+  const disposeAndQuit = () => {
+    if (disposing) return;
+    disposing = true;
+    stopProtocol();
+    void service.dispose().catch(error => log("Publisher Worker 清理失败:", error)).finally(() => app.quit());
+  };
   const handlers = {
     "system.handshake": () => ({
       protocolVersion: 2,
@@ -81,7 +104,7 @@ async function main() {
     "system.health": () => service.health(),
     "system.shutdown": () => {
       traceBoot("shutdown");
-      setImmediate(() => { void service.dispose().finally(() => app.quit()); });
+      setImmediate(disposeAndQuit);
       return { ok: true };
     },
     "accounts.list": () => service.accounts.list(),
@@ -98,14 +121,42 @@ async function main() {
     "submissions.delete": params => service.deleteSubmission(params),
     "submissions.openTarget": params => openSubmissionTarget(service, params),
   };
-  const stopProtocol = startNdjsonServer({ input: process.stdin, output: process.stdout, handlers });
-  process.stdin.once("end", () => {
-    traceBoot("stdin-end");
-    stopProtocol();
-    void service.dispose().finally(() => app.quit());
-  });
+  let input = process.stdin;
+  let output = process.stdout;
+  if (process.platform === "win32") {
+    const socket = net.createConnection(publisherPipe);
+    try {
+      await new Promise((resolve, reject) => {
+        const onConnect = () => {
+          socket.removeListener("error", onError);
+          resolve();
+        };
+        const onError = error => {
+          socket.removeListener("connect", onConnect);
+          reject(error);
+        };
+        socket.once("connect", onConnect);
+        socket.once("error", onError);
+      });
+    } catch (error) {
+      traceBoot("pipe-connect-error");
+      socket.destroy();
+      throw error;
+    }
+    traceBoot("pipe-connect");
+    socket.on("error", () => { traceBoot("pipe-error"); disposeAndQuit(); });
+    socket.once("end", () => { traceBoot("pipe-end"); disposeAndQuit(); });
+    socket.once("close", () => { traceBoot("pipe-close"); disposeAndQuit(); });
+    socket.write(`${JSON.stringify({ auth: publisherPipeToken })}\n`);
+    traceBoot("pipe-auth-write");
+    input = socket;
+    output = socket;
+  } else {
+    process.stdin.once("end", () => { traceBoot("stdin-end"); disposeAndQuit(); });
+  }
+  stopProtocol = startNdjsonServer({ input, output, handlers });
   traceBoot("protocol-ready");
-  process.stdin.resume();
+  input.resume();
 }
 
 main().catch(error => {
