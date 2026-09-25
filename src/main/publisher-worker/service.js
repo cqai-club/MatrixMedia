@@ -17,6 +17,7 @@ import {
   runBaijiahaoArticle, runWechatOfficialArticle,
 } from "./article.js";
 import { validateTargetContent } from "./target-content.js";
+import { modeForPreparedContent } from "./article-preparation.js";
 import { publisherUserAgent } from "./userAgent.js";
 
 function text(value, label, max) {
@@ -97,7 +98,7 @@ export class PublisherWorkerService {
     if (this.stopping) throw new PublisherProtocolError("worker-stopping", "发布引擎正在退出");
     const contentType = params.contentType || "video";
     if (!["video", "article", "image-note"].includes(contentType)) throw new PublisherProtocolError("invalid-submission", "内容类型无效");
-    const mode = params.mode === "draft" ? "draft" : params.mode === "publish" ? "publish" : "";
+    let mode = params.mode === "draft" ? "draft" : params.mode === "publish" ? "publish" : "";
     if (!mode) throw new PublisherProtocolError("invalid-submission", "发布模式无效");
     if (!Array.isArray(params.accountIds) || params.accountIds.length === 0) throw new PublisherProtocolError("invalid-submission", "请至少选择一个发布账号");
     const uniqueIds = [...new Set(params.accountIds.map(String))];
@@ -114,6 +115,7 @@ export class PublisherWorkerService {
     let file = "";
     let source = null;
     let acceptedManifest = "";
+    const adjustments = [];
     if (contentType === "video") {
       const requestedFile = text(params.file, "视频文件", 4096);
       if (!path.isAbsolute(requestedFile) || !fs.existsSync(requestedFile)) throw new PublisherProtocolError("video-not-found", "成片文件不存在");
@@ -123,7 +125,19 @@ export class PublisherWorkerService {
       if (!Number.isSafeInteger(params.revision) || params.revision < 1) throw new PublisherProtocolError("invalid-content", "草稿修订号无效");
       source = readContentPackage(params.contentDirectory, params.contentId, params.revision, contentType);
       for (const account of selected) {
-        validateTargetContent(source.manifest, account, contentType, capabilities, this.accounts.wechat);
+        const messages = [];
+        validateTargetContent(source.manifest, account, contentType, capabilities, this.accounts.wechat, messages);
+        if (messages.length) adjustments.push({ accountId: account.id, messages });
+      }
+      const preparedMode = modeForPreparedContent(mode, contentType, adjustments);
+      if (preparedMode !== mode) {
+        // A corrected article must reach a reviewable platform draft, never go live unseen.
+        mode = preparedMode;
+        for (const account of selected) {
+          if (!accepts(capabilities, account.platform, contentType, mode)) {
+            throw new PublisherProtocolError("unsupported-capability", `${account.displayName}暂不支持转存草稿`);
+          }
+        }
       }
       acceptedManifest = JSON.stringify(source.manifest);
     }
@@ -161,6 +175,8 @@ export class PublisherWorkerService {
           tags: source ? source.manifest.tags : tags(params.tags),
           creativeStatement,
           mode,
+          ...(mode !== params.mode ? { requestedMode: params.mode } : {}),
+          ...(adjustments.length ? { adjustments } : {}),
         }, selected);
         this.kick();
         return { accepted: true, submission: publicSubmission(submission) };
@@ -232,8 +248,17 @@ export class PublisherWorkerService {
             for (const item of request) results.push(await runSingleFilePublish(item));
           } else {
             const content = readContentPackage(submission.snapshotDirectory, submission.contentId, submission.revision, submission.contentType, false);
-            for (const account of accounts) {
-              const effective = projectContentForPlatform(content.manifest, account.platform);
+            const preparedTargets = accounts.map(account => {
+              const messages = [];
+              const effective = validateTargetContent(content.manifest, account, submission.contentType,
+                capabilities, this.accounts.wechat, messages);
+              const accepted = submission.adjustments?.find(item => item.accountId === account.id)?.messages || [];
+              if (JSON.stringify(messages) !== JSON.stringify(accepted)) {
+                throw new PublisherProtocolError("invalid-content", "平台草稿修整规则已变化，本次提交未开始，请重新提交");
+              }
+              return { account, effective };
+            });
+            for (const { account, effective } of preparedTargets) {
               if (account.platform === "juejin" && submission.contentType === "article") {
                 results.push(await runJuejinArticle(account, submission, effective));
               } else if (account.platform === "blbl" && submission.contentType === "article") {

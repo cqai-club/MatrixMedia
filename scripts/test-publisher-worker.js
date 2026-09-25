@@ -316,12 +316,13 @@ const root = path.join(__dirname, "..");
       { validate: content => { wechatValidated = content.title; } });
     assert.strictEqual(wechatValidated, "公众号标题");
     assert.strictEqual(wechatTarget.body, "## 微信正文");
-    assert.deepStrictEqual(wechatTarget.assets.map(asset => asset.id), [secondAssetId, assetId]);
+    assert.deepStrictEqual(wechatTarget.assets.map(asset => asset.id), [assetId]);
     const juejinTarget = targets.validateTargetContent(checked.manifest,
       { platform: "juejin", displayName: "掘金" }, "article", advertised, null);
     assert.deepStrictEqual(juejinTarget.assets.map(asset => asset.id), [assetId]);
-    assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: {} },
-      { platform: "juejin", displayName: "掘金" }, "article", advertised, null), /素材不能超过1个/u);
+    const reducedJuejin = targets.validateTargetContent({ ...manifest, platformVariants: {} },
+      { platform: "juejin", displayName: "掘金" }, "article", advertised, null);
+    assert.deepStrictEqual(reducedJuejin.assets.map(asset => asset.id), [assetId]);
     const toutiaoTarget = targets.validateTargetContent({ ...manifest, summary: "主稿摘要" },
       { platform: "tt", displayName: "头条" }, "article", advertised, null);
     assert.strictEqual(toutiaoTarget.summary, "");
@@ -330,11 +331,11 @@ const root = path.join(__dirname, "..");
     assert.strictEqual(toutiaoWithSummary.summary, "独立摘要");
     assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: { wxmp: { title: "" } } },
       { platform: "wxmp", displayName: "公众号" }, "article", advertised, { validate: () => {} }), /标题不能为空/u);
-    assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: { tt: { assetOrder: [secondAssetId] } } },
-      { platform: "tt", displayName: "头条" }, "article", advertised, null), /封面不在所选图片中/u);
-    assert.throws(() => targets.validateTargetContent({ ...manifest, platformVariants: {
-      tt: { assetOrder: [assetId], body: `![排除素材](ebao-asset://${secondAssetId})` },
-    } }, { platform: "tt", displayName: "头条" }, "article", advertised, null), /必须引用当前草稿中已上传的素材/u);
+    assert.strictEqual(targets.validateTargetContent({ ...manifest, platformVariants: { tt: { assetOrder: [secondAssetId] } } },
+      { platform: "tt", displayName: "头条" }, "article", advertised, null).coverAssetId, secondAssetId);
+    assert.strictEqual(targets.validateTargetContent({ ...manifest, platformVariants: {
+      tt: { assetOrder: [assetId], body: `正文 ![排除素材](ebao-asset://${secondAssetId})` },
+    } }, { platform: "tt", displayName: "头条" }, "article", advertised, null).body, "正文 ");
     const noImageTarget = targets.validateTargetContent({ ...manifest, platformVariants: { tt: { assetOrder: [], coverAssetId: null } } },
       { platform: "tt", displayName: "头条" }, "article", advertised, null);
     assert.deepStrictEqual(noImageTarget.assets, []);

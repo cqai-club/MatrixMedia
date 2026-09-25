@@ -43,6 +43,13 @@ export function publicSubmission(submission) {
   const message = typeof diagnostic === "string"
     ? diagnostic.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 200)
     : "";
+  const adjustments = Array.isArray(submission.adjustments) ? submission.adjustments
+    .filter(item => item && typeof item.accountId === "string" && Array.isArray(item.messages))
+    .map(item => ({ accountId: item.accountId,
+      messages: item.messages.filter(value => typeof value === "string")
+        .map(value => value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 200))
+        .filter(Boolean).slice(0, 12),
+    })) : [];
   return {
     id: submission.id,
     createdAt: submission.createdAt,
@@ -51,6 +58,9 @@ export function publicSubmission(submission) {
     ...(submission.workId ? { workId: submission.workId } : {}),
     title: submission.title,
     mode: submission.mode,
+    ...(submission.requestedMode && submission.requestedMode !== submission.mode
+      ? { requestedMode: submission.requestedMode } : {}),
+    ...(adjustments.length ? { adjustments } : {}),
     state,
     ...(message ? { message } : {}),
     targets: submission.targets.map(target => ({
@@ -152,6 +162,8 @@ export class PublisherStore {
       tags: input.tags || [],
       creativeStatement: input.creativeStatement || "none",
       mode: input.mode,
+      ...(input.requestedMode ? { requestedMode: input.requestedMode } : {}),
+      ...(Array.isArray(input.adjustments) && input.adjustments.length ? { adjustments: input.adjustments } : {}),
       state: "queued",
       targets: accounts.map(account => ({
         accountId: account.id,

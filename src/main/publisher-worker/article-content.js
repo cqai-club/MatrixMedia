@@ -2,6 +2,7 @@
 
 import MarkdownIt from "markdown-it";
 import { PublisherProtocolError } from "./protocol.js";
+import { hasRawHtmlImage } from "./article-preparation.js";
 
 const markdown = new MarkdownIt({ html: false, linkify: false });
 const wechatMarkdown = new MarkdownIt({ html: false, linkify: false });
@@ -205,7 +206,7 @@ export function articleImageIds(manifest) {
     if (!id || !known.has(id)) invalid("正文图片必须引用当前草稿中已上传的素材");
     used.add(id);
   });
-  if (/<img\b/iu.test(manifest.body || "")) invalid("正文不接受原始 HTML 图片，请使用素材引用");
+  if (hasRawHtmlImage(manifest.body || "")) invalid("正文不接受原始 HTML 图片，请使用素材引用");
   return [...used];
 }
 
