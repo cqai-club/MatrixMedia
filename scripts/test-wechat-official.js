@@ -9,6 +9,7 @@ const { pathToFileURL } = require("url");
 (async () => {
   const root = path.join(__dirname, "..");
   const { WechatOfficialClient } = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/wechat-official.js")));
+  const { prepareWechatImage } = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/wechat-image.js")));
   const { PublisherStore } = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/store.js")));
   const { platformCapabilities } = await import(pathToFileURL(path.join(root, "src/main/publisher-worker/capabilities.js")));
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "ebao-wechat-test-"));
@@ -72,6 +73,65 @@ const { pathToFileURL } = require("url");
     assert.deepStrictEqual(requests.map(item => item.pathname), [
       "/cgi-bin/media/uploadimg", "/cgi-bin/material/add_material", "/cgi-bin/draft/add", "/cgi-bin/freepublish/submit", "/cgi-bin/freepublish/get",
     ]);
+    // An oversized body image is normalized before either material upload.
+    const oversized = Buffer.concat([png, Buffer.alloc(1024 * 1024)]);
+    const converted = Buffer.from(png);
+    const imageApi = { createFromBuffer: () => ({
+      isEmpty: () => false, getSize: () => ({ width: 2400, height: 1600 }),
+      toPNG: () => oversized,
+      resize: () => ({ toPNG: () => converted }),
+    }) };
+    const normalized = await prepareWechatImage({ mime: "image/png", bytes: oversized.length },
+      oversized, 1024 * 1024, imageApi);
+    assert.strictEqual(normalized.mime, "image/png");
+    assert.strictEqual(normalized.bytes.length, converted.length);
+    const oversizedCover = Buffer.concat([png, Buffer.alloc(10 * 1024 * 1024)]);
+    assert.strictEqual((await prepareWechatImage({ mime: "image/png", bytes: oversizedCover.length },
+      oversizedCover, 10 * 1024 * 1024, imageApi)).bytes.length, oversized.length);
+    const smallImage = { createFromBuffer: () => ({
+      isEmpty: () => false, getSize: () => ({ width: 8, height: 8 }),
+      toPNG: () => converted,
+    }) };
+    assert.strictEqual((await prepareWechatImage({ mime: "image/png", bytes: oversized.length },
+      oversized, 1024 * 1024, smallImage)).bytes.length, converted.length);
+    const jpegAttempts = [];
+    const jpegImage = { createFromBuffer: () => ({
+      isEmpty: () => false, getSize: () => ({ width: 1800, height: 1200 }),
+      toJPEG: quality => {
+        jpegAttempts.push(quality);
+        return Buffer.alloc(quality === 72 ? 700_000 : 1_100_000);
+      },
+    }) };
+    const jpegBytes = Buffer.alloc(1_100_000);
+    const jpegResult = await prepareWechatImage({ mime: "image/jpeg", bytes: jpegBytes.length },
+      jpegBytes, 1024 * 1024, jpegImage);
+    assert.strictEqual(jpegResult.mime, "image/jpeg");
+    assert.strictEqual(jpegResult.bytes.length, 700_000);
+    assert.deepStrictEqual(jpegAttempts, [85, 72]);
+    const resizedWidths = [];
+    await assert.rejects(prepareWechatImage({ mime: "image/png", bytes: oversized.length },
+      oversized, 1024 * 1024, { createFromBuffer: () => ({
+        isEmpty: () => false, getSize: () => ({ width: 2400, height: 1600 }),
+        toPNG: () => oversized,
+        resize: ({ width }) => { resizedWidths.push(width); return { toPNG: () => oversized }; },
+      }) }), /保留可用尺寸/u);
+    assert.strictEqual(Math.min(...resizedWidths), 720);
+    const largeManifest = { ...manifest, assets: [{ ...manifest.assets[0], bytes: oversized.length }] };
+    fs.writeFileSync(path.join(temporary, "assets", assetId), oversized);
+    requests.length = 0;
+    const convertedDraft = await new WechatOfficialClient(mock, () => Date.now(), imageApi)
+      .submit(credentials, submission, largeManifest, largeManifest.body);
+    assert.strictEqual(convertedDraft.status, "draft");
+    const uploadRequests = requests.filter(item => ["/cgi-bin/media/uploadimg", "/cgi-bin/material/add_material"].includes(item.pathname));
+    assert.deepStrictEqual(uploadRequests.map(item => item.options.body.get("media").size),
+      [converted.length, converted.length]);
+    assert.strictEqual(fs.readFileSync(path.join(temporary, "assets", assetId)).length, oversized.length);
+    requests.length = 0;
+    await assert.rejects(new WechatOfficialClient(mock, () => Date.now(), {
+      createFromBuffer: () => ({ isEmpty: () => true }),
+    }).submit(credentials, submission, largeManifest, largeManifest.body), /无法解码/u);
+    assert.strictEqual(requests.length, 0, "bad images must fail before any remote call");
+    fs.writeFileSync(path.join(temporary, "assets", assetId), png);
     requests.length = 0;
     await client.token({ ...credentials, appSecret: "b".repeat(32) });
     assert.deepStrictEqual(requests.map(item => item.pathname), ["/cgi-bin/stable_token"]);

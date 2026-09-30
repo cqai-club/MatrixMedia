@@ -335,7 +335,8 @@ const root = path.join(__dirname, "..");
       { platform: "tt", displayName: "头条" }, "article", advertised, null).coverAssetId, secondAssetId);
     assert.strictEqual(targets.validateTargetContent({ ...manifest, platformVariants: {
       tt: { assetOrder: [assetId], body: `正文 ![排除素材](ebao-asset://${secondAssetId})` },
-    } }, { platform: "tt", displayName: "头条" }, "article", advertised, null).body, "正文 ");
+    } }, { platform: "tt", displayName: "头条" }, "article", advertised, null).body,
+    "正文 \n\n【待手动上传图片 1：排除素材】\n\n");
     const noImageTarget = targets.validateTargetContent({ ...manifest, platformVariants: { tt: { assetOrder: [], coverAssetId: null } } },
       { platform: "tt", displayName: "头条" }, "article", advertised, null);
     assert.deepStrictEqual(noImageTarget.assets, []);

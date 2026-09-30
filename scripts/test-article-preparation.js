@@ -49,11 +49,14 @@ const root = path.join(__dirname, "..");
 
   const toutiao = preparation.prepareTargetArticle({ ...original, assets: [assets[2]], coverAssetId: first }, "tt");
   assert.strictEqual(toutiao.content.coverAssetId, third);
-  assert.ok(toutiao.content.body.includes(`![保留](ebao-asset://${third})`));
+  assert.ok(toutiao.content.body.includes("【待手动上传图片 1：保留】"));
   assert.ok(!toutiao.content.body.includes("![外链]"));
   assert.ok(!toutiao.content.body.includes("![WebP]"));
   assert.ok(toutiao.content.body.includes("![围栏代码]"));
   assert.ok(!toutiao.content.body.includes("raw.png"));
+  assert.ok(toutiao.content.body.includes("【待手动上传图片 2：外链】"));
+  assert.ok(toutiao.messages.some(value => value.includes("图片占位")));
+  assert.ok(toutiao.messages.some(value => value.includes("封面不会自动上传")));
   const trickyUrls = preparation.prepareTargetArticle({ ...original, body:
     '前 ![标题](https://example.com/a.png "has ) paren") 中 ![尖括号](<https://example.com/a).png>) 后' }, "juejin");
   assert.strictEqual(trickyUrls.content.body, "前  中  后");
@@ -66,11 +69,11 @@ const root = path.join(__dirname, "..");
   }
 
   const wechat = preparation.prepareTargetArticle(original, "wxmp");
-  assert.strictEqual(wechat.content.coverAssetId, third);
-  assert.deepStrictEqual(wechat.content.assets.map(asset => asset.id), [third]);
+  assert.strictEqual(wechat.content.coverAssetId, second);
+  assert.deepStrictEqual(wechat.content.assets.map(asset => asset.id), [second, third, fourth]);
   assert.ok(wechat.content.body.includes(`![保留](ebao-asset://${third})`));
   assert.ok(!wechat.content.body.includes("![WebP]"));
-  assert.ok(!wechat.content.body.includes("![大图]"));
+  assert.ok(wechat.content.body.includes(`![大图](ebao-asset://${fourth})`));
   assert.strictEqual(wechat.content.title.length, 64);
   assert.strictEqual(wechat.content.summary.length, 120);
   const emojiBoundary = preparation.prepareTargetArticle({ ...original,
@@ -78,6 +81,7 @@ const root = path.join(__dirname, "..");
   assert.strictEqual(emojiBoundary.content.title, "标".repeat(63));
   assert.strictEqual(emojiBoundary.content.summary, "摘".repeat(119));
   assert.ok(wechat.messages.some(value => value.includes("公众号封面")));
+  assert.ok(wechat.messages.some(value => value.includes("上传前尝试压缩")));
   assert.ok(wechat.messages.some(value => value.includes("64 字")));
   assert.ok(preparation.prepareTargetArticle({ ...original, title: "标题", summary: "独立摘要", tags: ["话题"] }, "tt")
     .messages.some(value => value.includes("暂不写入摘要")));

@@ -4,6 +4,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { pathToFileURL } = require("url");
 const { build } = require("esbuild");
 
 (async () => {
@@ -52,6 +53,21 @@ const { build } = require("esbuild");
     assert.strictEqual(Object.hasOwn(toutiao.data, "tags"), false);
     assert.strictEqual(Object.hasOwn(toutiao.data, "summary"), false);
     assert.strictEqual(toutiao.data.content, "正文");
+    const { prepareTargetArticle, modeForPreparedContent } = await import(pathToFileURL(path.join(root,
+      "src/main/publisher-worker/article-preparation.js")));
+    const imageId = "22222222-2222-4222-8222-222222222222";
+    const withImage = { ...manifest, body: `开头\n\n![示意图](ebao-asset://${imageId})\n\n结尾`,
+      coverAssetId: imageId, assets: [{ id: imageId, mime: "image/png", bytes: 100 }] };
+    const prepared = prepareTargetArticle(withImage, "tt");
+    assert.match(prepared.content.body, /开头[\s\S]*【待手动上传图片 1：示意图】[\s\S]*结尾/u);
+    assert.strictEqual(modeForPreparedContent("publish", "article", [{ accountId: "test", messages: prepared.messages }]), "draft");
+    await adapters.runToutiaoArticle({ platform: "tt", pt: "头条", partition: "persist:test", id: "test" },
+      submission, prepared.content);
+    const manual = globalThis.__articleTagPayloads.at(-1);
+    assert.deepStrictEqual(manual.data.images, []);
+    assert.strictEqual(manual.data.coverPath, "");
+    assert.strictEqual(manual.data.content, prepared.content.body);
+    assert.strictEqual(withImage.body.includes(`![示意图](ebao-asset://${imageId})`), true);
     assert.strictEqual(Object.hasOwn(baijiahao.data, "tags"), false);
     assert.strictEqual(baijiahao.data.summary, "主稿摘要");
     assert.strictEqual(juejin.data.tags, "AI 科技");

@@ -26,8 +26,8 @@ export function validateTargetContent(manifest, account, contentType, capabiliti
   }
   if (contentType === "article" && account.platform === "wxmp"
     && !content.assets.some(asset => asset.id === content.coverAssetId
-      && ["image/jpeg", "image/png"].includes(asset.mime) && asset.bytes < 10 * 1024 * 1024)) {
-    throw new PublisherProtocolError("invalid-content", "微信公众号文章需要一张 JPEG/PNG 且小于 10MB 的封面");
+      && ["image/jpeg", "image/png"].includes(asset.mime))) {
+    throw new PublisherProtocolError("invalid-content", "微信公众号文章需要一张 JPEG/PNG 封面");
   }
   if (contentType === "article" && ["tt", "bjh", "wxmp"].includes(account.platform)) articleImageIds(content);
   if (contentType === "article" && account.platform === "wxmp") wechatClient.validate(content);

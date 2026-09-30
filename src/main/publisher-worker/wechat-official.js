@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { createHash } from "crypto";
 import { articleImageIds, renderWechatArticleHtml } from "./article-content.js";
+import { prepareWechatImage } from "./wechat-image.js";
 import { PublisherProtocolError } from "./protocol.js";
 
 const API = "https://api.weixin.qq.com";
@@ -24,10 +25,11 @@ function requiredResponse(value, field, action) {
 
 /** Official API only; no creator-site cookies, private endpoints, or token persistence. */
 export class WechatOfficialClient {
-  constructor(fetchImpl = globalThis.fetch, now = () => Date.now()) {
+  constructor(fetchImpl = globalThis.fetch, now = () => Date.now(), imageApi = null) {
     this.fetchImpl = fetchImpl;
     this.now = now;
     this.tokens = new Map();
+    this.imageApi = imageApi;
   }
 
   async json(url, options = {}) {
@@ -85,11 +87,9 @@ export class WechatOfficialClient {
     });
   }
 
-  async upload(credentials, endpoint, asset, directory, token) {
-    const file = path.join(directory, "assets", asset.id);
-    const bytes = fs.readFileSync(file);
+  async upload(credentials, endpoint, prepared, token) {
     const form = new FormData();
-    form.append("media", new Blob([bytes], { type: asset.mime }), asset.mime === "image/png" ? "image.png" : "image.jpg");
+    form.append("media", new Blob([prepared.bytes], { type: prepared.mime }), prepared.mime === "image/png" ? "image.png" : "image.jpg");
     return this.json(`${API}${endpoint}${endpoint.includes("?") ? "&" : "?"}access_token=${encodeURIComponent(token)}`, { method: "POST", body: form });
   }
 
@@ -102,24 +102,30 @@ export class WechatOfficialClient {
     if (!cover) invalid("微信公众号封面素材不存在");
     for (const asset of manifest.assets) {
       if (!["image/jpeg", "image/png"].includes(asset.mime)) invalid("微信公众号文章图片仅支持 JPEG 或 PNG");
-      if (asset.id === cover.id && asset.bytes >= COVER_LIMIT) invalid("微信公众号封面不能超过 10MB");
-      if (images.includes(asset.id) && asset.bytes >= IMAGE_LIMIT) invalid("微信公众号正文图片必须小于 1MB");
     }
     return { cover, images };
   }
 
   async submit(credentials, submission, manifest, body) {
     const { cover, images } = this.validate(manifest);
+    // Finish all conversions before the first remote call so a bad image cannot
+    // leave this attempt with only some materials uploaded.
+    const prepared = new Map();
+    for (const id of new Set([...images, cover.id])) {
+      const asset = manifest.assets.find(item => item.id === id);
+      const bytes = fs.readFileSync(path.join(submission.snapshotDirectory, "assets", id));
+      prepared.set(id, await prepareWechatImage(asset, bytes,
+        images.includes(id) ? IMAGE_LIMIT : COVER_LIMIT, this.imageApi));
+    }
     const token = await this.token(credentials);
     const uploaded = {};
     for (const id of images) {
-      const asset = manifest.assets.find(item => item.id === id);
-      const result = await this.upload(credentials, "/cgi-bin/media/uploadimg", asset, submission.snapshotDirectory, token);
+      const result = await this.upload(credentials, "/cgi-bin/media/uploadimg", prepared.get(id), token);
       const url = new URL(requiredResponse(result, "url", "正文图片上传"));
       if (url.protocol === "http:" && url.hostname === "mmbiz.qpic.cn") url.protocol = "https:";
       uploaded[id] = url.toString();
     }
-    const coverResult = await this.upload(credentials, "/cgi-bin/material/add_material?type=image", cover, submission.snapshotDirectory, token);
+    const coverResult = await this.upload(credentials, "/cgi-bin/material/add_material?type=image", prepared.get(cover.id), token);
     const coverId = requiredResponse(coverResult, "media_id", "封面上传");
     const html = renderWechatArticleHtml({ ...manifest, body }, uploaded);
     if (Buffer.byteLength(html, "utf8") >= IMAGE_LIMIT || html.length > 20_000) invalid("微信公众号文章正文超过接口限制");

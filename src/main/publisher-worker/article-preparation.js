@@ -58,7 +58,7 @@ function markdownImageRanges(source, mask, env) {
     if (mask.subarray(start, end).includes(1)) continue;
     const image = tokens.find(token => token.type === "image");
     if (!image) continue;
-    ranges.push({ start, end, src: image.attrGet("src") || "", kind: "markdown" });
+    ranges.push({ start, end, src: image.attrGet("src") || "", alt: image.content || "", kind: "markdown" });
     start = end - 1;
   }
   return ranges;
@@ -96,23 +96,35 @@ export function modeForPreparedContent(requestedMode, contentType, adjustments) 
     ? "draft" : requestedMode;
 }
 
-function removeImages(body, shouldRemove) {
+function replaceImages(body, replacement) {
   const env = {};
   const mask = codeMask(body, env);
   const images = markdownImageRanges(body, mask, env);
   const candidates = [...images, ...outsideMarkdownImages(rawHtmlImageRanges(body, mask), images)]
     .sort((left, right) => left.start - right.start);
-  const removed = [];
+  const replaced = [];
   let output = "";
   let cursor = 0;
   for (const candidate of candidates) {
-    if (candidate.start < cursor || !shouldRemove(candidate)) continue;
-    output += body.slice(cursor, candidate.start);
+    if (candidate.start < cursor) continue;
+    const value = replacement(candidate, replaced.length + 1);
+    if (value === null) continue;
+    output += body.slice(cursor, candidate.start) + value;
     cursor = candidate.end;
-    removed.push(candidate);
+    replaced.push(candidate);
   }
   output += body.slice(cursor);
-  return { body: output, removed };
+  return { body: output, replaced };
+}
+
+function removeImages(body, shouldRemove) {
+  const result = replaceImages(body, image => shouldRemove(image) ? "" : null);
+  return { body: result.body, removed: result.replaced };
+}
+
+function toutiaoImagePlaceholder(image, number) {
+  const alt = String(image.alt || "").replace(/[\r\n\t【】<>\[\]()*_`]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 60);
+  return `\n\n【待手动上传图片 ${number}${alt ? `：${alt}` : ""}】\n\n`;
 }
 
 function message(messages, condition, value) {
@@ -157,18 +169,23 @@ export function prepareTargetArticle(content, platform) {
       messages.push("掘金分类未填写，已使用默认分类「前端」");
     }
   } else if (["tt", "bjh", "wxmp"].includes(platform)) {
+    if (platform === "tt") {
+      const placeholders = replaceImages(result.body, toutiaoImagePlaceholder);
+      result.body = placeholders.body;
+      message(messages, placeholders.replaced.length > 0,
+        `头条正文已保留 ${placeholders.replaced.length} 处图片占位，请在草稿窗口手动上传`);
+    }
     const cleaned = removeImages(result.body, image => {
       if (image.kind === "html") return true;
       const id = MANAGED_IMAGE.exec(image.src)?.[1];
       const asset = id ? assetsById.get(id) : null;
       if (!asset) return true;
-      return platform === "wxmp" && (!["image/jpeg", "image/png"].includes(asset.mime) || asset.bytes >= WECHAT_BODY_LIMIT);
+      return platform === "wxmp" && !["image/jpeg", "image/png"].includes(asset.mime);
     });
     result.body = cleaned.body;
     message(messages, cleaned.removed.length > 0, `已移除 ${cleaned.removed.length} 张无法用于该平台的正文图片`);
     if (platform === "wxmp") {
-      const validCover = asset => asset && ["image/jpeg", "image/png"].includes(asset.mime)
-        && asset.bytes < WECHAT_COVER_LIMIT;
+      const validCover = asset => asset && ["image/jpeg", "image/png"].includes(asset.mime);
       if (!validCover(assetsById.get(result.coverAssetId))) {
         const replacement = result.assets.find(validCover);
         if (replacement) {
@@ -178,11 +195,17 @@ export function prepareTargetArticle(content, platform) {
       }
       const referenceEnv = {};
       const referenceMask = codeMask(result.body, referenceEnv);
-      const keptIds = new Set([result.coverAssetId, ...markdownImageRanges(result.body, referenceMask, referenceEnv)
-        .map(image => MANAGED_IMAGE.exec(image.src)?.[1]).filter(Boolean)]);
+      const bodyIds = new Set(markdownImageRanges(result.body, referenceMask, referenceEnv)
+        .map(image => MANAGED_IMAGE.exec(image.src)?.[1]).filter(Boolean));
+      const keptIds = new Set([result.coverAssetId, ...bodyIds]);
       const before = result.assets.length;
       result.assets = result.assets.filter(asset => keptIds.has(asset.id));
       message(messages, before > result.assets.length, `已排除 ${before - result.assets.length} 张未使用或不兼容的公众号素材`);
+      const toResize = result.assets.filter(asset =>
+        (bodyIds.has(asset.id) && asset.bytes >= WECHAT_BODY_LIMIT)
+        || (asset.id === result.coverAssetId && asset.bytes >= WECHAT_COVER_LIMIT));
+      message(messages, toResize.length > 0,
+        `公众号 ${toResize.length} 张图片将在上传前尝试压缩至接口限制，草稿需核对画质`);
       if (result.title.length > 64) {
         result.title = truncateUtf16(result.title, 64);
         messages.push("公众号标题已截为 64 字");
@@ -194,11 +217,14 @@ export function prepareTargetArticle(content, platform) {
     } else if (!assetsById.has(result.coverAssetId)) {
       if (result.assets.length) {
         result.coverAssetId = result.assets[0].id;
-        messages.push("已将所选第一张图片设为封面");
+        messages.push(platform === "tt" ? "已以首张图片作为头条封面参考" : "已将所选第一张图片设为封面");
       } else if (result.coverAssetId) {
         result.coverAssetId = null;
         messages.push("已清除不在所选素材中的封面");
       }
+    }
+    if (platform === "tt" && result.coverAssetId) {
+      messages.push("头条封面不会自动上传，请在草稿窗口手动设置");
     }
     if (platform === "tt" && String(result.summary || "").trim()) {
       messages.push("头条文章适配器暂不写入摘要；摘要仍保留在本地草稿");

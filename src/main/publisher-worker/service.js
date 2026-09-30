@@ -271,6 +271,11 @@ export class PublisherWorkerService {
                 outcome = await runBilibiliArticle(account, submission, effective);
               } else if (account.platform === "tt" && submission.contentType === "article") {
                 outcome = await runToutiaoArticle(account, submission, effective);
+                if (outcome.exitCode === 0 && submission.adjustments?.some(item => item.accountId === account.id
+                  && item.messages.some(message => message.startsWith("头条正文已保留")
+                    || message.startsWith("头条封面不会自动上传")))) {
+                  outcome.message = `${outcome.message || "头条草稿已保存"}；请在保留的头条窗口打开草稿，按占位补图、设置封面并再次保存`;
+                }
                 if (outcome.exitCode !== 0 && hasOpenPublishWindow(account.partition)
                   && !String(outcome.message || "").includes(TOUTIAO_DRAFT_WINDOW_NOTICE)) {
                   outcome.message = `${outcome.message || "头条草稿保存未确认"}；${TOUTIAO_DRAFT_WINDOW_NOTICE}`;

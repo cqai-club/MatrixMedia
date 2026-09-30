@@ -234,7 +234,8 @@ export function runBilibiliArticle(account, submission, manifest) {
 
 function runWebArticle(account, submission, manifest, url) {
   const cfg = ptConfig[account.pt];
-  const usedImages = new Set(articleImageIds(manifest));
+  const manualToutiaoImages = account.platform === "tt";
+  const usedImages = new Set(manualToutiaoImages ? [] : articleImageIds(manifest));
   const payload = {
     taskId: Date.now() + Math.random(),
     submissionId: submission.id,
@@ -248,8 +249,9 @@ function runWebArticle(account, submission, manifest, url) {
       images: manifest.assets.filter(asset => usedImages.has(asset.id)).map(asset => ({
         id: asset.id, mime: asset.mime, path: path.join(submission.snapshotDirectory, "assets", asset.id),
       })),
-      coverPath: manifest.coverAssetId ? path.join(submission.snapshotDirectory, "assets", manifest.coverAssetId) : "",
-      coverMime: manifest.assets.find(asset => asset.id === manifest.coverAssetId)?.mime || "",
+      coverPath: !manualToutiaoImages && manifest.coverAssetId
+        ? path.join(submission.snapshotDirectory, "assets", manifest.coverAssetId) : "",
+      coverMime: manualToutiaoImages ? "" : manifest.assets.find(asset => asset.id === manifest.coverAssetId)?.mime || "",
     },
     url,
     show: false,
