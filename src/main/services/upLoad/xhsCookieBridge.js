@@ -1,16 +1,14 @@
 "use strict";
 
 import { session } from "electron";
+import { XHS_CREATOR_COOKIE_NAMES } from "../accountLoginState.js";
 
 /**
- * 小红书创作者后台登录所需的关键 Cookie 名称。
- * 这些 cookie 是从 Electron session 导出并注入真实 Chrome 的最小必要集合。
+ * 导出创作者凭据，并携带存在的 customer SSO；SSO 不作为登录前提。
  */
 const XHS_KEY_COOKIE_NAMES = [
-  "access-token-creator.xiaohongshu.com",
+  ...XHS_CREATOR_COOKIE_NAMES,
   "customer-sso-sid",
-  "galaxy_creator_session_id",
-  "x-user-id-creator.xiaohongshu.com",
 ];
 
 const XHS_CREATOR_DOMAIN = "creator.xiaohongshu.com";
@@ -36,9 +34,8 @@ export async function exportXhsCookies(partition) {
         path: c.path || "/",
         httpOnly: c.httpOnly || false,
         secure: c.secure || true,
-        expires: c.expirationDate
-          ? Math.floor(c.expirationDate)
-          : Math.floor(Date.now() / 1000) + 90 * 86400,
+        // 会话 Cookie 不虚构持久有效期。
+        ...(Number.isFinite(c.expirationDate) ? { expires: Math.floor(c.expirationDate) } : {}),
       }));
 
     return keyCookies;

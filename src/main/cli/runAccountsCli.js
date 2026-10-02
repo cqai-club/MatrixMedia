@@ -4,17 +4,7 @@ import path from "path";
 import fs from "fs";
 import { app, session } from "electron";
 import ptConfig from "../config/ptConfig";
-
-const LOGIN_COOKIE_RULE = {
-  抖音: c => c.name === "passport_assist_user" && !!c.value,
-  百家号: c => c.name === "BDUSS" && !!c.value,
-  头条: c => c.name === "odin_tt" && c.value && c.value.length > 65,
-  视频号: c => c.name === "sessionid" && !!c.value,
-  番茄视频: c => c.name === "sessionid" && !!c.value,
-  哔哩哔哩: c => c.name === "SESSDATA" && !!c.value,
-  快手: c => c.name === "userId" && !!c.value,
-  掘金: c => c.name === "passport_csrf_token" && !!c.value && c.value.length > 10,
-};
+import { checkCookieLogin } from "../services/accountLoginState.js";
 
 function getAccountsDir() {
   const documents = app.getPath("documents");
@@ -50,28 +40,20 @@ function readAccounts() {
 }
 
 async function probeLogin(account) {
-  const rule = LOGIN_COOKIE_RULE[account.pt];
-  if (!rule) {
-    return { loggedIn: false, reason: "未知平台", expireMs: null };
-  }
   const partition = account.partition || `persist:${String(account.phone).split("-")[0]}${account.pt}`;
   const cfg = ptConfig[account.pt];
   const probeUrl = account.url || (cfg && (cfg.listIndex || cfg.upload || cfg.index));
   if (!probeUrl) {
-    return { loggedIn: false, reason: "缺少探测 URL", expireMs: null };
+    return { loggedIn: false, loginState: "unknown", reason: "缺少探测 URL", expireMs: null };
   }
   try {
-    const ses = session.fromPartition(partition.split("-")[0]);
+    const ses = session.fromPartition(partition);
     const cookies = await ses.cookies.get({ url: probeUrl });
-    const hit = cookies.find(rule);
-    if (!hit) return { loggedIn: false, reason: "无登录 cookie", expireMs: null };
-    const expireMs = hit.expirationDate ? Math.floor(hit.expirationDate * 1000) : null;
-    if (expireMs && expireMs < Date.now()) {
-      return { loggedIn: false, reason: "cookie 已过期", expireMs };
-    }
-    return { loggedIn: true, reason: "", expireMs };
+    const state = checkCookieLogin(account.pt, cookies);
+    return { loggedIn: state.loginState === "logged-in", loginState: state.loginState,
+      reason: state.reason, expireMs: state.expiresAt };
   } catch (e) {
-    return { loggedIn: false, reason: `查询失败: ${e.message || e}`, expireMs: null };
+    return { loggedIn: false, loginState: "unknown", reason: "登录状态查询失败，请重试", expireMs: null };
   }
 }
 
@@ -94,12 +76,13 @@ export async function runAccountsCli(options) {
   for (const a of filtered) {
     const probe = await probeLogin(a);
     if (options.onlyLoggedIn && !probe.loggedIn) continue;
-    if (options.onlyLoggedOut && probe.loggedIn) continue;
+    if (options.onlyLoggedOut && probe.loginState !== "logged-out") continue;
     rows.push({
       phone: a.phone,
       pt: a.pt,
       partition: a.partition || `persist:${String(a.phone).split("-")[0]}${a.pt}`,
       loggedIn: probe.loggedIn,
+      loginState: probe.loginState,
       reason: probe.reason,
       expireAt: probe.expireMs,
       createdAt: a.createTime || null,
@@ -120,7 +103,7 @@ export async function runAccountsCli(options) {
   const lines = rows.map(r => [
     String(r.phone),
     r.pt,
-    r.loggedIn ? "已登录" : "未登录",
+    r.loginState === "unknown" ? "状态未知" : r.loggedIn ? "已登录" : "未登录",
     formatExpire(r.expireAt),
     r.loggedIn ? "-" : r.reason || "-",
   ]);
@@ -133,7 +116,8 @@ export async function runAccountsCli(options) {
   console.log(widths.map(w => "-".repeat(w)).join("  "));
   lines.forEach(r => console.log(render(r)));
   const ok = rows.filter(r => r.loggedIn).length;
-  console.log(`\n共 ${rows.length} 个账号，已登录 ${ok}，未登录 ${rows.length - ok}`);
+  const unknown = rows.filter(r => r.loginState === "unknown").length;
+  console.log(`\n共 ${rows.length} 个账号，已登录 ${ok}，未登录 ${rows.length - ok - unknown}，状态未知 ${unknown}`);
   return 0;
 }
 

@@ -1,6 +1,7 @@
 "use strict";
 
 import { session } from "electron";
+import { checkCookieLogin } from "../accountLoginState.js";
 
 export const SPH_ORIGIN = "https://channels.weixin.qq.com";
 
@@ -8,7 +9,7 @@ export const SPH_ORIGIN = "https://channels.weixin.qq.com";
  * 视频号 partition 不做特殊裁剪，直接使用原值。
  */
 export function normalizeSphPartition(partition) {
-  return String(partition || "").split("-")[0];
+  return String(partition || "");
 }
 
 /**
@@ -18,7 +19,7 @@ export async function getSphSessionId(partition) {
   const part = normalizeSphPartition(partition);
   const ses = session.fromPartition(part);
   const cookies = await ses.cookies.get({ url: SPH_ORIGIN });
-  const c = cookies.find(c => c.name === "sessionid" && c.value);
+  const c = cookies.find(c => checkCookieLogin("视频号", [c]).loginState === "logged-in");
   return c ? c.value : null;
 }
 

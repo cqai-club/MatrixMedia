@@ -342,7 +342,7 @@ export async function runSphCliLogin({
 
   // 与 GUI open-account-login-window 保持一致：先应用代理配置
   try {
-    await applyAccountProxyForTask({ partition: part, phone, pt: "视频号" });
+    await applyAccountProxyForTask({ partition: part, phone, pt: "视频号", preservePartition: true });
   } catch (proxyErr) {
     console.warn("[sph-cli-login] 应用代理失败:", proxyErr && proxyErr.message);
   }

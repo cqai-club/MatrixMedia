@@ -172,3 +172,5 @@ electron . cli publish-article -p juejin --phone 13800138000 -t "文章标题" -
 - `yarn build:mac`：macOS dmg（x64 + arm64）
 - `yarn build:linux`：Linux AppImage
 - `yarn build:all`：Windows + Linux + macOS
+
+`cli accounts --json` 保留 `loggedIn` 字段，并提供 `loginState`（`logged-in` / `logged-out` / `unknown`）；读取异常不等同于退出，`--logged-out` 只筛选明确未登录的账号。已保存的 `partition` 原样使用，与 GUI 和 Worker 共用 Cookie 规则，包括小红书创作者凭据检查。

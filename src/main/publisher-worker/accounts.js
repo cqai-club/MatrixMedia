@@ -13,43 +13,13 @@ import { publisherUserAgent } from "./userAgent.js";
 import { accountWindowOptions, attachAccountWindowHandlers, allowsAccountWindowUrl } from "./account-windows.js";
 import { DOUYIN_PROFILE_SCRIPT, normalizeAccountName, profileNameScript } from "./account-name.js";
 import { WechatOfficialClient } from "./wechat-official.js";
+import { checkCookieLogin } from "../services/accountLoginState.js";
 
 export const PLATFORM_TO_PT = {
   dy: "抖音", sph: "视频号", xhs: "小红书", blbl: "哔哩哔哩",
   ks: "快手", tt: "头条", bjh: "百家号", fqsp: "番茄视频", juejin: "掘金", wxmp: "微信公众号",
 };
 const PT_TO_PLATFORM = Object.fromEntries(Object.entries(PLATFORM_TO_PT).map(([key, value]) => [value, key]));
-
-const LOGIN_RULES = {
-  抖音: cookies => cookie(cookies, "passport_assist_user"),
-  百家号: cookies => cookie(cookies, "BDUSS"),
-  头条: cookies => cookie(cookies, "odin_tt", value => value.length > 65),
-  视频号: cookies => cookie(cookies, "sessionid"),
-  番茄视频: cookies => cookie(cookies, "sessionid"),
-  哔哩哔哩: cookies => cookie(cookies, "SESSDATA"),
-  快手: cookies => cookie(cookies, "userId"),
-  掘金: cookies => cookie(cookies, "passport_csrf_token", value => value.length > 10),
-  小红书: cookies => {
-    const names = [
-      "access-token-creator.xiaohongshu.com", "customer-sso-sid",
-      "galaxy_creator_session_id", "x-user-id-creator.xiaohongshu.com",
-    ];
-    // Keep MatrixMedia's existing login rule: every creator cookie must carry
-    // a real expiry so a stale/session-only partial login is not accepted.
-    const hits = names.map(name => cookies.find(item =>
-      item.name === name && item.value && Number.isFinite(item.expirationDate)
-    ));
-    if (hits.some(item => !item)) return null;
-    return hits.reduce((earliest, item) => {
-      if (!earliest || !item.expirationDate) return earliest || item;
-      return item.expirationDate < earliest.expirationDate ? item : earliest;
-    }, null);
-  },
-};
-
-function cookie(cookies, name, accept = () => true) {
-  return cookies.find(item => item.name === name && item.value && accept(item.value));
-}
 
 function requiredText(value, label) {
   const text = String(value || "").trim();
@@ -175,19 +145,20 @@ export class PublisherAccounts {
         const loginError = error instanceof PublisherProtocolError
           ? error.message
           : "公众号接口检查失败，请重试";
-        return publicAccount(this.store.updateAccount(account.id, { loginState: "logged-out", expiresAt: undefined, loginError }));
+        const loginState = ["wechat-network-error", "wechat-http-error"].includes(error?.code)
+          || !(error instanceof PublisherProtocolError) ? "unknown" : "logged-out";
+        return publicAccount(this.store.updateAccount(account.id, { loginState, expiresAt: undefined, loginError }));
       }
     }
     const cfg = ptConfig[account.pt];
     const ses = session.fromPartition(account.partition);
     try {
       const cookies = await ses.cookies.get({ url: cfg.listIndex || cfg.index });
-      const hit = LOGIN_RULES[account.pt] && LOGIN_RULES[account.pt](cookies);
-      const expiresAt = hit && hit.expirationDate ? Math.floor(hit.expirationDate * 1000) : undefined;
-      const loggedIn = Boolean(hit && (!expiresAt || expiresAt > Date.now()));
+      const state = checkCookieLogin(account.pt, cookies);
+      const loggedIn = state.loginState === "logged-in";
       const patch = {
-        loginState: loggedIn ? "logged-in" : "logged-out",
-        ...(expiresAt ? { expiresAt } : { expiresAt: undefined }),
+        loginState: state.loginState,
+        expiresAt: state.expiresAt ?? undefined,
       };
       if (loggedIn && account.autoName) {
         const detectedName = await this.detectName(account);
