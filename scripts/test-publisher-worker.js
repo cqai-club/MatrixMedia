@@ -65,7 +65,13 @@ const root = path.join(__dirname, "..");
   assert.strictEqual(capabilities.accepts(advertised, "tt", "image-note", "draft"), false);
   assert.strictEqual(capabilities.accepts(advertised, "tt", "image-note", "publish"), false);
   assert.strictEqual(capabilities.accepts(advertised, "ks", "image-note", "draft"), false);
-  assert.strictEqual(capabilities.accepts(advertised, "dy", "image-note", "draft"), false);
+  for (const platform of ["dy", "wxmp"]) {
+    assert.strictEqual(capabilities.accepts(advertised, platform, "image-note", "draft"), true);
+    assert.strictEqual(capabilities.accepts(advertised, platform, "image-note", "publish"), true);
+    assert.strictEqual(advertised.find(item => item.platform === platform).maxAssets["image-note"], 20);
+  }
+  assert.strictEqual(advertised.find(item => item.platform === "wxmp").maxTitleLength["image-note"], 32);
+  assert.strictEqual(capabilities.accepts(advertised, "sph", "image-note", "publish"), false);
   assert.strictEqual(capabilities.accepts(advertised, "bjh", "image-note", "publish"), false);
   assert.strictEqual(routing.publisherHandlerKey({ pt: "头条", textType: "article", publishToDraft: true }), "article:tt:draft");
   assert.strictEqual(routing.publisherHandlerKey({ pt: "百家号", textType: "article" }), "article:bjh:publish");
@@ -75,6 +81,7 @@ const root = path.join(__dirname, "..");
   assert.strictEqual(routing.publisherHandlerKey({ pt: "头条", textType: "image-note", publishToDraft: true }), "");
   assert.strictEqual(routing.publisherHandlerKey({ pt: "快手", textType: "image-note", publishToDraft: true }), "image-note:ks:draft");
   assert.strictEqual(routing.publisherHandlerKey({ pt: "抖音", textType: "image-note", publishToDraft: true }), "image-note:dy:draft");
+  assert.strictEqual(routing.publisherHandlerKey({ pt: "抖音", textType: "image-note" }), "image-note:dy:publish");
   assert.strictEqual(routing.usesManualToutiaoArticleWindow({ publisherWorker: true, pt: "头条", textType: "article", publishToDraft: true }), true);
   assert.strictEqual(routing.usesManualToutiaoArticleWindow({ publisherWorker: true, pt: "头条", textType: "image-note", publishToDraft: true }), false);
   assert.strictEqual(routing.usesManualToutiaoArticleWindow({ publisherWorker: true, pt: "头条", textType: "article", publishToDraft: false }), false);
@@ -347,6 +354,22 @@ const root = path.join(__dirname, "..");
     assert.throws(() => targets.validateTargetContent({ ...manifest, contentType: "image-note", title: "图文", body: "正文", coverAssetId: null,
       assets: Array.from({ length: 19 }, (_, index) => ({ id: String(index), mime: "image/png" })) },
     { platform: "xhs", displayName: "小红书" }, "image-note", advertised, null), /素材不能超过18个/u);
+    const imageNote = { ...manifest, contentType: "image-note", title: "图片消息", body: "纯文本正文",
+      platformVariants: { wxmp: { assetOrder: [secondAssetId, assetId], coverAssetId: null } } };
+    let validatedImageNote;
+    const projectedNote = targets.validateTargetContent(imageNote, { platform: "wxmp", displayName: "公众号" },
+      "image-note", advertised, { validateImageNote: value => { validatedImageNote = value; } });
+    assert.deepStrictEqual(projectedNote.assets.map(asset => asset.id), [secondAssetId, assetId]);
+    assert.strictEqual(projectedNote.coverAssetId, secondAssetId);
+    assert.strictEqual(validatedImageNote, projectedNote);
+    assert.strictEqual(imageNote.coverAssetId, manifest.coverAssetId);
+    assert.strictEqual(imageNote.platformVariants.wxmp.coverAssetId, null);
+    assert.strictEqual(targets.validateTargetContent({ ...imageNote, title: "🙂".repeat(32) },
+      { platform: "wxmp", displayName: "公众号" }, "image-note", advertised,
+      { validateImageNote: () => {} }).title, "🙂".repeat(32));
+    assert.throws(() => targets.validateTargetContent({ ...imageNote, title: "字".repeat(33) },
+      { platform: "wxmp", displayName: "公众号" }, "image-note", advertised,
+      { validateImageNote: () => {} }), /32字/u);
     fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...manifest, platformVariants: { wxmp: { assetOrder: ["99999999-9999-4999-8999-999999999999"] } } }));
     assert.throws(() => packages.readContentPackage(source, contentId, 3, "article"), /平台图片顺序无效/u);
     fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ ...manifest, platformVariants: { wxmp: { coverAssetId: "99999999-9999-4999-8999-999999999999" } } }));

@@ -6,12 +6,21 @@ const windowsByPartition = new Map();
 const closeCallbacksByPartition = new Map();
 const submissionIdsByWindow = new WeakMap();
 
-export function shouldKeepToutiaoArticleDraftWindow(data) {
-  return data?.publisherWorker === true && data.pt === "头条"
-    && data.textType === "article" && data.publishToDraft === true;
+export function isToutiaoWorkerTask(data) {
+  return data?.publisherWorker === true && data.pt === "头条";
 }
 
-export const TOUTIAO_DRAFT_WINDOW_NOTICE = "头条草稿窗口已保留，可核查后手动关闭；关闭前该账号不能再次提交。";
+export function toutiaoFailureMessage(message, mode = "draft") {
+  const text = String(message || "").trim();
+  const action = mode === "draft" ? "草稿保存" : "发布";
+  if (/Waiting failed|Navigation timeout|TimeoutError|timeout.*exceeded|Timed out after/iu.test(text)) {
+    return `头条${action}超时，请从发布记录打开平台稿件检查`;
+  }
+  if (!text || /结果待确认|平台结果待确认/u.test(text)) {
+    return `头条${action}未完成，请从发布记录打开平台稿件检查`;
+  }
+  return text;
+}
 
 export function registerPublishWindow(partition, win, submissionId = "") {
   if (!win) return;

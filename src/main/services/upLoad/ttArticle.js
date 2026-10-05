@@ -4,9 +4,8 @@ import {
   captureArticleNotices, clickArticleAction, confirmPlatformOutcome, currentUrl, failArticle,
   confirmToutiaoBodyAccepted, confirmToutiaoDraftAutosave,
   fillArticleMetadata, fillArticleTitle, findArticleEditor, finishArticle,
-  observeToutiaoDraftSave, pasteArticleHtml, renderUploadedArticle,
+  observeToutiaoDraftSave, pasteArticleHtml, renderUploadedArticle, verifyVisibleArticleTitle,
 } from "./articleWebTools.js";
-import { selectToutiaoCover, uploadToutiaoCover, uploadToutiaoImage } from "./articleImageUpload.js";
 
 /** Toutiao article adapter; real-account draft/publish acceptance remains separate. */
 export default async function publishToutiaoArticle(page, data, window, event) {
@@ -16,18 +15,17 @@ export default async function publishToutiaoArticle(page, data, window, event) {
   try {
     const editor = await findArticleEditor(page);
     saveObserver?.expect(data.data.title, data.data.content);
-    const titleSelector = await fillArticleTitle(page, data.data.title, { stableVisible: true });
+    let titleSelector = await fillArticleTitle(page, data.data.title, { stableVisible: true });
     if (mode === "draft") clicked = true; // Title edits can already trigger autosave.
-    const uploaded = {};
-    for (const asset of data.data.images || []) {
-      uploaded[asset.id] = await uploadToutiaoImage(page, editor, asset);
-    }
-    const html = renderUploadedArticle(data, uploaded);
+    // Images are represented by preparation-stage placeholders. The user
+    // uploads body images and sets the cover in the retained Toutiao window.
+    const html = renderUploadedArticle(data, {});
     saveObserver?.expect(data.data.title, data.data.content, html);
-    await pasteArticleHtml(page, editor, html, data.data.content, page, Object.values(uploaded), {
+    await pasteArticleHtml(page, editor, html, data.data.content, page, [], {
       preferKeyboardForPlain: true, verifyWholeBody: true,
     });
     await confirmToutiaoBodyAccepted(page);
+    titleSelector = await verifyVisibleArticleTitle(page, data.data.title);
     // A rich paste can leave the entire body selected. Move focus to the
     // already-filled title so Toutiao commits the editor change and autosaves.
     try { await page.click(titleSelector); }
@@ -49,37 +47,21 @@ export default async function publishToutiaoArticle(page, data, window, event) {
         }, String(data.data.title || "").trim(), editor);
       } catch { /* The mandatory save and reopened-draft checks report failure. */ }
     }
-    // Confirm the body save before choosing a cover, so a late body save cannot
-    // be mistaken for the cover's own autosave transition.
-    if (mode === "draft" && data.data.coverPath) {
-      const bodySaved = await saveObserver.waitForFullBodySave(30000);
-      if (!bodySaved.confirmed) throw new Error(bodySaved.reason);
-    }
-    let coverUrl = "";
-    let selectExistingCover = false;
-    if (data.data.coverPath) {
-      const existing = (data.data.images || []).find(asset => asset.path === data.data.coverPath);
-      if (existing) {
-        coverUrl = uploaded[existing.id];
-        selectExistingCover = true;
-      } else coverUrl = await uploadToutiaoCover(page, editor, {
-        path: data.data.coverPath, mime: data.data.coverMime,
-      }, mode === "draft");
-    }
     await fillArticleMetadata(page, data);
-    if (selectExistingCover) await selectToutiaoCover(page, coverUrl, mode === "draft");
 
     const before = currentUrl(page);
     if (mode === "draft") {
+      await verifyVisibleArticleTitle(page, data.data.title);
       // The current Toutiao editor autosaves to Drafts; it has no explicit
       // "保存草稿" action. Never report success before its save indicator confirms.
       const result = await confirmToutiaoDraftAutosave(page, data.data.title, 30000, saveObserver,
-        { expectedHtml: html, coverUrl });
+        { expectedHtml: html });
       if (!result.confirmed) throw new Error(result.reason);
       await finishArticle(page, data, window, event, mode, before, true, result.draftUrl);
       return;
     }
     const notices = await captureArticleNotices(page);
+    await verifyVisibleArticleTitle(page, data.data.title);
     clicked = true;
     await clickArticleAction(page, ["预览并发布", "发布"]);
     // Some revisions show a second preview dialog. Only click in that dialog.

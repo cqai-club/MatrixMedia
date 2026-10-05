@@ -7,6 +7,8 @@ const CONTENT_ADAPTERS = {
   "juejin:article": { requiredFields: ["category"], maxAssets: 1 },
   "blbl:article": { requiredFields: [], maxAssets: 1 },
   "xhs:image-note": { requiredFields: [], maxAssets: 18, maxTitleLength: 20 },
+  "dy:image-note": { requiredFields: [], maxAssets: 20 },
+  "wxmp:image-note": { requiredFields: [], maxAssets: 20, maxTitleLength: 32 },
   "wxmp:article": { requiredFields: [], maxAssets: 20, maxTitleLength: 64 },
 };
 const ARTICLE_MODES = {

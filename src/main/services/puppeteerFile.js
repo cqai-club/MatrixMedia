@@ -11,7 +11,7 @@ import { UPLOAD_WINDOW_AUTO_CLOSE_MS } from "./upLoad/uploadTimeouts.js";
 import { skipCloseConfirmation } from "./upLoad/closeWindow.js";
 import {
   hasAnyOpenPublishWindow, registerPublishWindow,
-  shouldKeepToutiaoArticleDraftWindow, TOUTIAO_DRAFT_WINDOW_NOTICE,
+  isToutiaoWorkerTask, toutiaoFailureMessage,
 } from "./publishWindowRegistry.js";
 import { applyAccountProxyForTask } from "./proxyConfig.js";
 import {
@@ -367,17 +367,22 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   const finishOnce = () => {
     if (finished) return;
     finished = true;
+    if (isToutiaoWorkerTask(data)) closePublishWinProgrammatically(activeWin);
     cleanupTaskResources();
     if (queueDone) queueDone();
   };
 
   const closePublishWinProgrammatically = (win) => {
-    if (finished && win?._mmRetainedForInspection) return;
+    if (finished && win?._mmRetainedForInspection && !isToutiaoWorkerTask(data)) return;
     if (win && !win.isDestroyed()) {
       win._mmClosedByProgram = true;
     }
     skipCloseConfirmation(win);
-    if (win && !win.isDestroyed()) win.close();
+    if (win && !win.isDestroyed()) {
+      // 头条终态立即释放同账号 session，站点 beforeunload 不得阻塞后续队列。
+      if (isToutiaoWorkerTask(data)) win.destroy();
+      else win.close();
+    }
   };
 
   const createAttemptTransport = () => createPublishAttemptTransport(data, transport, () => finished, finishOnce);
@@ -413,27 +418,16 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
   };
 
   /** 带截图路径的失败回执（没有截到图时不带该字段） */
-  const retainToutiaoDraftWindow = () => {
-    if (!shouldKeepToutiaoArticleDraftWindow(data) || !activeWin || activeWin.isDestroyed()) return false;
-    try {
-      activeWin.show();
-      activeWin.focus();
-      activeWin._mmRetainedForInspection = true;
-      return true;
-    } catch { return false; }
-  };
-
   const replyFailureWithShot = async (payload) => {
     const shot = await snapshotForFailure();
-    const retained = retainToutiaoDraftWindow();
     const message = String(payload.message || "执行失败");
     safeReply("puppeteerFile-done", {
       ...payload,
-      message: retained && !message.includes(TOUTIAO_DRAFT_WINDOW_NOTICE)
-        ? `${message}；${TOUTIAO_DRAFT_WINDOW_NOTICE}` : message,
+      message: isToutiaoWorkerTask(data)
+        ? toutiaoFailureMessage(message, data.publishToDraft ? "draft" : "publish") : message,
       ...(shot ? { failScreenshot: shot } : {}),
     });
-    return retained;
+    return false;
   };
 
   const runXhsRealChrome = async () => {
@@ -735,6 +729,10 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
           }, retryDelay);
           return;
         }
+        if (isToutiaoWorkerTask(data) && win._mmClosedByProgram) {
+          finishOnce();
+          return;
+        }
         // 用户主动关窗（非程序自动关窗 / 非重试关窗）：跳过该平台。
         const userClosed = !win._mmClosedByProgram;
         if (userClosed) {
@@ -945,7 +943,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       });
 
       const AUTO_CLOSE_DELAY = UPLOAD_WINDOW_AUTO_CLOSE_MS;
-      if (!isXhsTask && !shouldKeepToutiaoArticleDraftWindow(data)) {
+      if (!isXhsTask && !manualToutiaoArticleWindow) {
         autoCloseTimer = setTimeout(() => {
           console.log(
             `窗口 ${data.partition} 已自动关闭（${Math.round(
@@ -1014,7 +1012,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
                       ? xhsImageNoteHandler
                     : key === "image-note:ks:draft"
                       ? ksImageNoteHandler
-                    : key === "image-note:dy:draft"
+                    : key === "image-note:dy:draft" || key === "image-note:dy:publish"
                       ? dyImageNoteHandler
                       : key.startsWith("legacy:") ? Type[data.pt] : undefined;
             if (typeof action !== "function") {
@@ -1047,7 +1045,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
                 currentUrl,
                 message,
               });
-              if (shouldKeepToutiaoArticleDraftWindow(data)) {
+              if (isToutiaoWorkerTask(data)) {
                 await replyFailureWithShot({ ...data, status: false, message });
                 finishOnce();
                 return;
@@ -1067,10 +1065,10 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
               finishOnce();
               return;
             }
-            if (shouldKeepToutiaoArticleDraftWindow(data)) {
+            if (isToutiaoWorkerTask(data)) {
               await replyFailureWithShot({
                 ...data, status: false,
-                message: "头条草稿页地址异常，请核查窗口中的登录或跳转状态",
+                message: "头条文章页面跳转异常，请重新登录或从发布记录打开平台稿件检查",
               });
               finishOnce();
               return;
@@ -1104,7 +1102,7 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
       }, 3000);
     } catch (error) {
       if (finished) return;
-      if (win && !win.isDestroyed() && shouldKeepToutiaoArticleDraftWindow(data)) {
+      if (win && !win.isDestroyed() && isToutiaoWorkerTask(data)) {
         await replyFailureWithShot({
           ...data, status: false,
           message: error?.message || "头条草稿窗口异常",
@@ -1160,15 +1158,14 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
     runtimeTask.setCancelHandler((reason) => {
       if (finished) return;
       const message = reason || "上传任务已主动中断";
-      const timedOutForInspection = reason === "内容提交超时，已停止浏览器任务"
-        && retainToutiaoDraftWindow();
       safeReply("puppeteerFile-done", {
         ...data,
         status: false,
         interrupted: true,
-        message: timedOutForInspection ? `${message}；${TOUTIAO_DRAFT_WINDOW_NOTICE}` : message,
+        message: isToutiaoWorkerTask(data)
+          ? toutiaoFailureMessage(message, data.publishToDraft ? "draft" : "publish") : message,
       });
-      if (!timedOutForInspection && activeWin && !activeWin.isDestroyed()) {
+      if (activeWin && !activeWin.isDestroyed()) {
         closePublishWinProgrammatically(activeWin);
       }
       finishOnce();

@@ -226,10 +226,8 @@ export function prepareTargetArticle(content, platform) {
     if (platform === "tt" && result.coverAssetId) {
       messages.push("头条封面不会自动上传，请在草稿窗口手动设置");
     }
-    if (platform === "tt" && String(result.summary || "").trim()) {
-      messages.push("头条文章适配器暂不写入摘要；摘要仍保留在本地草稿");
-    }
-    if (Array.isArray(result.tags) && result.tags.some(tag => String(tag || "").trim())) {
+    // 头条不传独立摘要和标签，静默跳过，不把这些信息变成草稿修整项。
+    if (platform !== "tt" && Array.isArray(result.tags) && result.tags.some(tag => String(tag || "").trim())) {
       messages.push("该平台文章适配器暂不写入标签；标签仍保留在本地草稿");
     }
   }

@@ -55,6 +55,16 @@ const { build } = require("esbuild");
     assert.strictEqual(toutiao.data.content, "正文");
     const { prepareTargetArticle, modeForPreparedContent } = await import(pathToFileURL(path.join(root,
       "src/main/publisher-worker/article-preparation.js")));
+    const metadataOnly = prepareTargetArticle(manifest, "tt");
+    assert.deepStrictEqual(metadataOnly.messages, [], "头条摘要和标签不应显示为修整信息");
+    assert.strictEqual(modeForPreparedContent("publish", "article", []), "publish");
+    const published = await adapters.runToutiaoArticle({ platform: "tt", pt: "头条", partition: "persist:test", id: "test" },
+      { ...submission, mode: "publish" }, metadataOnly.content);
+    assert.strictEqual(published.status, "success");
+    const silentMetadata = globalThis.__articleTagPayloads.at(-1);
+    assert.strictEqual(silentMetadata.publishToDraft, false);
+    assert.strictEqual(Object.hasOwn(silentMetadata.data, "tags"), false);
+    assert.strictEqual(Object.hasOwn(silentMetadata.data, "summary"), false);
     const imageId = "22222222-2222-4222-8222-222222222222";
     const withImage = { ...manifest, body: `开头\n\n![示意图](ebao-asset://${imageId})\n\n结尾`,
       coverAssetId: imageId, assets: [{ id: imageId, mime: "image/png", bytes: 100 }] };

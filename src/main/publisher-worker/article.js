@@ -28,8 +28,9 @@ export function withDisclosure(body, statement) {
 }
 
 export function runWechatOfficialArticle(account, submission, manifest, credentials, client = new WechatOfficialClient()) {
-  if (account.platform !== "wxmp") throw new PublisherProtocolError("unsupported-platform", "公众号文章适配器不可用");
-  return client.submit(credentials, submission, manifest, withDisclosure(manifest.body, manifest.creativeStatement));
+  if (account.platform !== "wxmp") throw new PublisherProtocolError("unsupported-platform", "公众号适配器不可用");
+  return client.submit(credentials, submission, manifest, manifest.contentType === "image-note"
+    ? manifest.body : withDisclosure(manifest.body, manifest.creativeStatement));
 }
 
 function runWorkerTask(payload, mode) {
@@ -51,6 +52,10 @@ function runWorkerTask(payload, mode) {
       runPuppeteerTask(payload, {
         reply(channel, response) {
           if (channel !== "puppeteerFile-done" || response?.taskId !== taskId) return;
+          if (response.outcome === "failed") {
+            finish({ exitCode: 1, status: "failed", message: response.message || "平台提交失败" });
+            return;
+          }
           if (response.publishAbnormal || response.needsAttention || response.skipped) {
             finish({ exitCode: 1, status: "unknown", message: response.message || "平台结果待确认" });
             return;
@@ -132,8 +137,8 @@ export function runKuaishouImageNote(account, submission, manifest) {
 }
 
 export function runDouyinImageNote(account, submission, manifest) {
-  if (account.platform !== "dy" || submission.mode !== "draft") {
-    throw new PublisherProtocolError("unsupported-platform", "抖音图文暂只支持转存草稿");
+  if (account.platform !== "dy" || !["draft", "publish"].includes(submission.mode)) {
+    throw new PublisherProtocolError("unsupported-platform", "抖音图文提交方式无效");
   }
   return runImageNoteTask(account, submission, manifest, IMAGE_NOTE_URLS.dy);
 }

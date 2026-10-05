@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { runSingleFilePublish } from "../services/publishVideo.js";
-import { destroyAllPublishWindows, hasOpenPublishWindow, TOUTIAO_DRAFT_WINDOW_NOTICE } from "../services/publishWindowRegistry.js";
+import { destroyAllPublishWindows, toutiaoFailureMessage } from "../services/publishWindowRegistry.js";
 import ptConfig from "../config/ptConfig.js";
 import { PublisherProtocolError } from "./protocol.js";
 import { PublisherStore, publicSubmission } from "./store.js";
@@ -274,15 +274,14 @@ export class PublisherWorkerService {
                 if (outcome.exitCode === 0 && submission.adjustments?.some(item => item.accountId === account.id
                   && item.messages.some(message => message.startsWith("头条正文已保留")
                     || message.startsWith("头条封面不会自动上传")))) {
-                  outcome.message = `${outcome.message || "头条草稿已保存"}；请在保留的头条窗口打开草稿，按占位补图、设置封面并再次保存`;
+                  outcome.message = `${outcome.message || "头条草稿已保存"}；请从发布记录打开平台草稿，按占位补图、设置封面并再次保存`;
                 }
-                if (outcome.exitCode !== 0 && hasOpenPublishWindow(account.partition)
-                  && !String(outcome.message || "").includes(TOUTIAO_DRAFT_WINDOW_NOTICE)) {
-                  outcome.message = `${outcome.message || "头条草稿保存未确认"}；${TOUTIAO_DRAFT_WINDOW_NOTICE}`;
+                if (outcome.exitCode !== 0) {
+                  outcome.message = toutiaoFailureMessage(outcome.message, submission.mode);
                 }
               } else if (account.platform === "bjh" && submission.contentType === "article") {
                 outcome = await runBaijiahaoArticle(account, submission, effective);
-              } else if (account.platform === "wxmp" && submission.contentType === "article") {
+              } else if (account.platform === "wxmp" && ["article", "image-note"].includes(submission.contentType)) {
                 outcome = await runWechatOfficialArticle(account, submission, effective,
                   this.accounts.wechatCredentials(account.id), this.accounts.wechat);
               } else if (account.platform === "xhs" && submission.contentType === "image-note") {

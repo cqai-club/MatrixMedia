@@ -4,6 +4,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const vm = require("vm");
+const webpack = require("webpack");
 const { EventEmitter } = require("events");
 const { build, buildSync } = require("esbuild");
 const { Keyboard } = require("puppeteer-core");
@@ -46,10 +48,9 @@ try {
   const webExports = [
     "captureArticleNotices", "clickArticleAction", "confirmPlatformOutcome", "currentUrl", "failArticle",
     "confirmToutiaoBodyAccepted", "confirmToutiaoDraftAutosave", "confirmToutiaoInitialDraftAutosave",
-    "fillArticleMetadata", "fillArticleTitle", "findArticleEditor", "finishArticle",
+    "fillArticleMetadata", "fillArticleTitle", "verifyVisibleArticleTitle", "findArticleEditor", "finishArticle",
     "observeToutiaoDraftSave", "pasteArticleHtml", "renderUploadedArticle",
   ];
-  const imageExports = ["selectToutiaoCover", "uploadToutiaoCover", "uploadToutiaoImage"];
   const toutiaoAdapterBuild = {
     entryPoints: [path.join(root, "src/main/services/upLoad/ttArticle.js")],
     bundle: true, platform: "node", format: "cjs",
@@ -57,11 +58,11 @@ try {
     plugins: [{
       name: "mock-toutiao-adapter-dependencies",
       setup(build) {
-        build.onResolve({ filter: /^\.\/article(?:WebTools|ImageUpload)\.js$/u }, args => ({
-          path: args.path.includes("WebTools") ? "web" : "image", namespace: "tt-article-test",
+        build.onResolve({ filter: /^\.\/articleWebTools\.js$/u }, () => ({
+          path: "web", namespace: "tt-article-test",
         }));
-        build.onLoad({ filter: /.*/u, namespace: "tt-article-test" }, args => ({
-          contents: (args.path === "web" ? webExports : imageExports)
+        build.onLoad({ filter: /.*/u, namespace: "tt-article-test" }, () => ({
+          contents: webExports
             .map(name => `export const ${name} = (...args) => globalThis.__ttAdapterMocks.${name}(...args);`)
             .join("\n"),
           loader: "js",
@@ -72,7 +73,7 @@ try {
   const tools = require(path.join(bundleDir, "articleWebTools.cjs"));
   const { canonicalJuejinDraftUrl, default: publishJuejinArticle } =
     require(path.join(bundleDir, "juejinArticle-test.cjs"));
-  const upload = require(path.join(bundleDir, "articleImageUpload.cjs"));
+  const upload = Object.assign({}, require(path.join(bundleDir, "articleImageUpload.cjs")));
   assert.strictEqual(canonicalJuejinDraftUrl("https://juejin.cn/editor/drafts/123456?source=editor"),
     "https://juejin.cn/editor/drafts/123456");
   for (const url of ["https://juejin.cn/editor/drafts/new", "https://juejin.cn/editor/drafts",
@@ -111,6 +112,32 @@ try {
 
   (async () => {
     try {
+      // 使用正式 webpack 的默认 esbuild-loader 降级与生产压缩，不能让源模块闭包掩盖注入缺失。
+      const workerWebpack = require(path.join(root, ".electron-vue/webpack.main.config.js"));
+      const productionUploadPath = path.join(temporary, "webpack", "articleImageUpload.cjs");
+      await new Promise((resolve, reject) => {
+        const compiler = webpack({
+          mode: "production", target: workerWebpack.target,
+          entry: path.join(root, "src/main/services/upLoad/articleImageUpload.js"),
+          module: workerWebpack.module, externals: workerWebpack.externals,
+          resolve: workerWebpack.resolve,
+          output: { path: path.dirname(productionUploadPath), filename: path.basename(productionUploadPath),
+            library: { type: "commonjs2" } },
+          optimization: { minimize: true },
+          infrastructureLogging: { level: "error" },
+        });
+        compiler.run((error, stats) => compiler.close(closeError => {
+          if (error || closeError) return reject(error || closeError);
+          if (stats.hasErrors()) return reject(new Error(stats.toString({ all: false, errors: true })));
+          resolve();
+        }));
+      });
+      const productionUpload = require(productionUploadPath);
+      const browserContext = vm.createContext({});
+      const executeBrowserFunction = (callback, globals, args = []) => {
+        Object.assign(browserContext, globals);
+        return vm.runInContext(`(${callback.toString()})`, browserContext)(...args);
+      };
       const juejinReplies = [];
       let juejinStep = 0;
       await publishJuejinArticle({
@@ -146,33 +173,84 @@ try {
           removeAttribute(name) { delete this[name]; },
         },
       ];
+      const titleWrites = [];
+      let titleEvaluations = 0;
+      let titleReads = 0;
+      let focusedTitle;
+      const visibleTitle = initialValue => {
+        let value = initialValue;
+        return {
+          get value() { titleReads++; return value; },
+          set value(next) { value = next; },
+          getBoundingClientRect: () => ({ width: 420, height: 40 }),
+          setAttribute(name, attribute) { this[name] = attribute; },
+          removeAttribute(name) { delete this[name]; },
+          focus() { focusedTitle = this; },
+        };
+      };
+      titleElements[1] = visibleTitle("");
+      const initialTitleInput = titleElements[1];
       const oldGetComputedStyle = global.getComputedStyle;
       global.getComputedStyle = () => ({ visibility: "visible" });
       const titlePage = {
         waitForSelector: async () => {},
         evaluate: async (callback, ...args) => {
+          titleEvaluations++;
           global.document = { querySelectorAll: selector => selector === "[data-ebao-article-title]"
-            ? [] : titleElements };
+            ? titleElements.filter(element => element["data-ebao-article-title"])
+            : titleElements };
           return callback(...args);
         },
-        click: async selector => assert.strictEqual(selector, "[data-ebao-article-title='true']"),
-        keyboard: { press: async key => assert.strictEqual(key, "Backspace") },
-        type: async (selector, title) => {
+        click: async selector => {
           assert.strictEqual(selector, "[data-ebao-article-title='true']");
-          assert.strictEqual(title, "测试标题");
+          titleElements[1].focus();
         },
-        waitForFunction: async (callback, _options, ...args) => {
-          global.document = { querySelectorAll: () => titleElements };
-          assert.strictEqual(callback(...args), false);
-          titleElements[1] = { ...titleElements[1], value: "测试标题" }; // React replaced the marked input.
-          assert.strictEqual(callback(...args), true);
+        keyboard: {
+          press: async key => {
+            assert.strictEqual(key, "Backspace");
+            // 清空受控框会重建输入框，旧 focus/marker 都不能继续依赖。
+            titleElements[1] = visibleTitle("");
+          },
+          sendCharacter: async title => {
+            assert.notStrictEqual(titleElements[1], initialTitleInput);
+            assert.strictEqual(focusedTitle, titleElements[1], "整段标题必须写入清空后重新定位的新可见框");
+            titleWrites.push(title);
+            // 输入结束并不保证 React 已保留完整值；先继续正文，再单次核对。
+            titleElements[1].value = "测试";
+          },
         },
+        type: async () => assert.fail("头条标题必须一次性整段输入"),
+        $eval: async () => assert.fail("标题输入后不能阻塞回读"),
+        waitForFunction: async () => assert.fail("标题输入后不能等待值匹配"),
       };
       assert.strictEqual(await tools.fillArticleTitle(titlePage, "测试标题", { stableVisible: true }),
         "[data-ebao-article-title='true']");
+      assert.deepStrictEqual(titleWrites, ["测试标题"]);
+      assert.strictEqual(titleEvaluations, 2, "清空后应同步重新定位一次，不轮询");
+      assert.strictEqual(titleReads, 0, "输入标题不应读取或等待标题值");
       assert.strictEqual(titleElements[0].value, "旧值");
       assert.strictEqual(titleElements[1]["data-ebao-article-title"], "true");
-      titleElements[1].value = "";
+      const originalTitle = titleElements[1];
+      titleElements[1] = visibleTitle("测试标题");
+      titleEvaluations = 0;
+      await tools.verifyVisibleArticleTitle(titlePage, "测试标题");
+      assert.strictEqual(titleEvaluations, 1, "正文后仅单次核对标题，不能轮询");
+      assert.strictEqual(titleReads, 1, "只读取当前唯一可见框一次");
+      assert.strictEqual(titleElements[1]["data-ebao-article-title"], "true", "React 替换后应重标记当前输入框");
+      assert.strictEqual(titleElements[0].value, "旧值");
+      titleElements[1].value = "测试";
+      await assert.rejects(tools.verifyVisibleArticleTitle(titlePage, "测试标题"), /文章标题与待发布标题不一致/u);
+      titleElements[1].value = "测试标题";
+      const duplicateTitlePage = { ...titlePage,
+        evaluate: async (callback, ...args) => {
+          global.document = { querySelectorAll: selector => selector === "[data-ebao-article-title]"
+            ? [originalTitle, titleElements[1]] : [titleElements[1], {
+              value: "测试标题", getBoundingClientRect: () => ({ width: 420, height: 40 }),
+            }] };
+          return callback(...args);
+        },
+      };
+      await assert.rejects(tools.verifyVisibleArticleTitle(duplicateTitlePage, "测试标题"), /文章标题与待发布标题不一致/u);
       await assert.rejects(tools.fillArticleTitle({ ...titlePage,
         evaluate: async (callback, ...args) => {
           global.document = { querySelectorAll: () => [titleElements[1], {
@@ -181,6 +259,18 @@ try {
           return callback(...args);
         },
       }, "测试标题", { stableVisible: true }), /标题输入框未能唯一定位/u);
+      const legacyTitleCalls = [];
+      const legacyTitlePage = {
+        waitForSelector: async () => {},
+        click: async () => {},
+        keyboard: { press: async () => {} },
+        type: async (_selector, title, options) => legacyTitleCalls.push({ title, options }),
+        $eval: async () => "测试标题",
+      };
+      await tools.fillArticleTitle(legacyTitlePage, "测试标题");
+      assert.deepStrictEqual(legacyTitleCalls, [{ title: "测试标题", options: { delay: 25 } }]);
+      await assert.rejects(tools.fillArticleTitle({ ...legacyTitlePage, $eval: async () => "测试" },
+        "测试标题"), /文章标题未写入/u);
       global.getComputedStyle = oldGetComputedStyle;
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt(before), "draft", before), false);
       assert.strictEqual(await tools.confirmPlatformOutcome(pageAt(before, ["图片保存成功"]), "draft", before, ["图片保存成功"]), false);
@@ -253,15 +343,22 @@ try {
       assert.match((await tools.confirmToutiaoInitialDraftAutosave(titleSavePage("保存失败"), "测试标题", save, 1)).reason, /初始草稿尚未在页面确认/u);
       assert.match((await tools.confirmToutiaoInitialDraftAutosave(titleSavePage("草稿已保存", "不匹配"), "测试标题", save, 1)).reason, /初始草稿尚未在页面确认/u);
       assert.match((await save.waitForFullBodySave(1)).reason, /未观察到头条完整正文/u);
-      responses.emit("response", saveResponse("<p>完整测试正文</p>", 0, { pgcId: "draft-1" }));
+      responses.emit("response", saveResponse("<p>完整测试正文</p>", 0));
       await new Promise(resolve => setImmediate(resolve));
       assert.strictEqual((await save.waitForFullBodySave(1)).confirmed, true);
       assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList(true), "测试标题", 1, save)).confirmed, true);
       assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList(false), "测试标题", 1, save)).confirmed, false);
       assert.strictEqual((await tools.confirmToutiaoDraftAutosave(draftList("测试标题加后缀"), "测试标题", 1, save)).confirmed, false);
+      const articleTitleControl = ({ value = "测试标题", width = 420, height = 40,
+        visibility = "visible", disabled = false, ariaDisabled = false, marked = false } = {}) => ({
+        value, visibility, disabled,
+        getBoundingClientRect: () => ({ width, height }),
+        getAttribute: name => name === "aria-disabled" ? String(ariaDisabled)
+          : name === "data-ebao-article-title" && marked ? "true" : "",
+      });
       const reopenedDraft = ({ body = "开头文字不可丢失的中段结尾文字",
-        cover = "https://example.com/cover.png", titleCount = 1, currentUrl = "" } = {}) => {
-        const editUrl = "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1";
+        titleCount = 1, currentUrl = "", editId = "draft-1", editorTitles = [{}] } = {}) => {
+        const editUrl = `https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=${editId}`;
         const titleNode = () => ({
           textContent: "测试标题", children: [],
           getBoundingClientRect: () => ({ width: 120, height: 25 }),
@@ -271,19 +368,16 @@ try {
           waitForSelector: async () => {},
           evaluate: async () => "[data-ebao-article-editor='true']",
           waitForFunction: async (callback, _options, ...args) => {
-            const coverArea = {
-              getBoundingClientRect: () => ({ width: 150, height: 90 }),
-              querySelectorAll: () => cover ? [{
-                complete: true, naturalWidth: 800, currentSrc: cover, src: cover,
-                getAttribute: () => cover,
-              }] : [],
-            };
-            global.document = { querySelector: selector => selector === args[0]
-              ? { value: "测试标题" }
-              : selector === args[1] ? { textContent: body }
-                : selector === ".article-cover-images-wrap" ? coverArea : null };
+            const titleInputs = editorTitles.map(articleTitleControl);
+            global.document = { querySelectorAll: selector => selector.includes("placeholder") ? titleInputs : [],
+              querySelector: selector => selector === "[data-ebao-article-editor='true']"
+              ? { textContent: body, querySelectorAll: () => [] }
+                : selector.includes("placeholder") ? titleInputs[0] : null };
             global.location = { href: editUrl };
-            if (!callback(...args)) throw new Error("reopened draft mismatch");
+            const previousComputedStyle = global.getComputedStyle;
+            global.getComputedStyle = element => ({ visibility: element.visibility || "visible" });
+            try { if (!callback(...args)) throw new Error("reopened draft mismatch"); }
+            finally { global.getComputedStyle = previousComputedStyle; }
           },
           close: async () => {},
         };
@@ -297,31 +391,110 @@ try {
             return target;
           },
         };
+        let directEdit = false;
+        const visits = [];
         return {
-          goto: async () => {},
+          visits,
+          url: () => directEdit ? editPage.url() : "https://mp.toutiao.com/profile_v4/manage/draft",
+          goto: async url => { visits.push(url); directEdit = Boolean(tools.canonicalToutiaoDraftUrl(url)); },
+          waitForSelector: async (...args) => editPage.waitForSelector(...args),
           waitForFunction: async (callback, _options, ...args) => {
+            if (directEdit) return editPage.waitForFunction(callback, _options, ...args);
             global.document = { querySelectorAll: () => Array.from({ length: titleCount }, titleNode) };
             if (!callback(...args)) throw new Error("draft title mismatch");
           },
-          evaluate: async () => ({ marked: true, editHref: editUrl }),
+          evaluate: async (...args) => directEdit ? editPage.evaluate(...args) : { marked: true, editHref: editUrl },
           browser: () => browser,
           click: async selector => { assert.strictEqual(selector, "[data-ebao-draft-edit='true']"); },
         };
       };
-      const reopenOptions = { expectedHtml: "<p>开头文字</p><p>不可丢失的中段</p><p>结尾文字</p>",
-        coverUrl: "https://example.com/cover.png" };
+      const reopenOptions = { expectedHtml: "<p>开头文字</p><p>不可丢失的中段</p><p>结尾文字</p>" };
       assert.deepStrictEqual(await tools.confirmToutiaoDraftAutosave(reopenedDraft(), "测试标题", 1,
         save, reopenOptions), { confirmed: true, draftUrl:
           "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1" });
-      assert.deepStrictEqual(await tools.confirmToutiaoDraftAutosave(reopenedDraft({ currentUrl:
+      assert.match((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ currentUrl:
         "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-2" }), "测试标题", 1,
-        save, reopenOptions), { confirmed: true });
+        save, reopenOptions)).reason, /ID 与目标草稿不一致/u);
       assert.match((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ body: "开头文字结尾文字" }),
         "测试标题", 1, save, reopenOptions)).reason, /未确认完整正文/u);
-      assert.match((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ cover: "" }),
-        "测试标题", 1, save, reopenOptions)).reason, /未确认封面/u);
       assert.strictEqual((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ titleCount: 2 }),
         "测试标题", 1, save, reopenOptions)).confirmed, false);
+      assert.strictEqual((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ editorTitles: [
+        { value: "旧标题", width: 0, height: 0, marked: true }, {},
+      ] }), "测试标题", 1, save, reopenOptions)).confirmed, true,
+      "重开草稿应跳过首个带旧标记的隐藏标题，核对唯一可见标题");
+      for (const editorTitles of [[{}, {}], [{ width: 0, height: 0, marked: true }],
+        [{ visibility: "hidden" }], [{ disabled: true }], [{ ariaDisabled: true }], [{ value: "其他标题" }]]) {
+        assert.strictEqual((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ editorTitles }),
+          "测试标题", 1, save, reopenOptions)).confirmed, false,
+        "重开草稿标题不唯一、隐藏、禁用或不匹配时不能确认保存成功");
+      }
+      const verifiedSave = async ({ requestId = "", receipt = {}, html = reopenOptions.expectedHtml } = {}) => {
+        const events = new EventEmitter();
+        const observer = tools.observeToutiaoDraftSave(events);
+        observer.expect("测试标题", "开头文字不可丢失的中段结尾文字", reopenOptions.expectedHtml);
+        const response = saveResponse(html, 0, { pgcId: requestId });
+        response.json = async () => ({ code: 0, ...receipt });
+        events.emit("response", response);
+        await new Promise(resolve => setImmediate(resolve));
+        return { observer, events, saved: await observer.waitForFullBodySave(1) };
+      };
+      for (const input of [
+        { requestId: "draft-1", expectedId: "draft-1" },
+        { receipt: { pgc_id: "draft-1" }, expectedId: "draft-1" },
+        { receipt: { data: { pgc_id: "draft-1" } }, expectedId: "draft-1" },
+        { receipt: { data: { pgc_id: "7570000000000000001" } }, expectedId: "7570000000000000001" },
+        { receipt: { data: { pgc_id: 123 } }, expectedId: "123" },
+      ]) {
+        const { observer, saved } = await verifiedSave(input);
+        const expectedUrl = `https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=${input.expectedId}`;
+        assert.deepStrictEqual(saved, { confirmed: true, draftUrl: expectedUrl });
+        const duplicateTitles = reopenedDraft({ titleCount: 2, editId: input.expectedId });
+        assert.deepStrictEqual(await tools.confirmToutiaoDraftAutosave(duplicateTitles,
+          "测试标题", 1, observer, reopenOptions), { confirmed: true, draftUrl: expectedUrl },
+        "保存回执有稳定 ID 时同标题两篇草稿仍可精确重开核验");
+        assert.deepStrictEqual(duplicateTitles.visits, [expectedUrl], "有保存 ID 时不得挑选同标题列表中的草稿");
+        assert.match((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ currentUrl:
+          "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=wrong-draft" }),
+        "测试标题", 1, observer, reopenOptions)).reason, /ID 与目标草稿不一致/u);
+        assert.match((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ body: "开头文字结尾文字",
+          editId: input.expectedId }), "测试标题", 1, observer, reopenOptions)).reason, /未确认完整正文/u);
+        observer.stop();
+      }
+      for (const receipt of [
+        { data: { pgc_id: Number.MAX_SAFE_INTEGER + 1 } },
+        { data: { pgc_id: "0" } },
+        { data: { pgc_id: "bad/id" } },
+        { data: { article_id: "draft-1" } },
+      ]) {
+        const { observer, saved } = await verifiedSave({ receipt });
+        assert.deepStrictEqual(saved, { confirmed: true }, "不安全或非标准字段不得产生可信草稿地址");
+        assert.strictEqual((await tools.confirmToutiaoDraftAutosave(reopenedDraft({ titleCount: 2 }),
+          "测试标题", 1, observer, reopenOptions)).confirmed, false, "缺可信 ID 的同标题歧义必须保留未确认");
+        observer.stop();
+      }
+      const conflictingId = await verifiedSave({ requestId: "draft-1", receipt: { data: { pgc_id: "draft-2" } } });
+      assert.strictEqual(conflictingId.saved.confirmed, false);
+      assert.match(conflictingId.saved.reason, /草稿 ID 不一致/u);
+      conflictingId.observer.stop();
+      const incompleteId = await verifiedSave({ receipt: { data: { pgc_id: "draft-1" } },
+        html: "<p>开头文字</p><p>结尾文字</p>" });
+      assert.strictEqual(incompleteId.saved.confirmed, false, "不完整正文的成功回执不能提供可信 ID");
+      assert.strictEqual(incompleteId.saved.draftUrl, undefined);
+      incompleteId.observer.stop();
+      const lateEvents = new EventEmitter();
+      const lateSave = tools.observeToutiaoDraftSave(lateEvents);
+      lateSave.expect("测试标题", "完整测试正文", "<p>完整测试正文</p>");
+      let finishLateResponse;
+      const lateResponse = saveResponse("<p>完整测试正文</p>", 0);
+      lateResponse.json = () => new Promise(resolve => { finishLateResponse = resolve; });
+      lateEvents.emit("response", lateResponse);
+      lateSave.expect("测试标题", "新版完整测试正文", "<p>新版完整测试正文</p>");
+      finishLateResponse({ code: 0, data: { pgc_id: "old-draft" } });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual((await lateSave.waitForFullBodySave(1)).confirmed, false,
+        "重设最终正文期望后，先前尚未返回的回执不能绑定新稿件");
+      lateSave.stop();
       save.stop();
       assert.strictEqual(responses.listenerCount("response"), 0);
       const initialFailureResponses = new EventEmitter();
@@ -508,6 +681,10 @@ try {
 
       const sequence = [];
       const saveOptions = [];
+      const titleFailures = [];
+      let titleCheckCount = 0;
+      let failTitleCheck = 0;
+      let publishClicks = 0;
       const observer = {
         expect: (_title, _content, html) => sequence.push(html ? `expect-html:${html}` : "expect"),
         waitForFullBodySave: async () => { sequence.push("body-saved"); return { confirmed: true }; },
@@ -518,32 +695,38 @@ try {
         findArticleEditor: async () => "#editor",
         fillArticleTitle: async (_page, _title, options) => {
           assert.deepStrictEqual(options, { stableVisible: true });
+          titleCheckCount = 0;
           sequence.push("title"); return "#title";
+        },
+        verifyVisibleArticleTitle: async (_page, title) => {
+          assert.strictEqual(title, "测试标题");
+          sequence.push("title-check");
+          titleCheckCount++;
+          if (titleCheckCount === failTitleCheck) throw new Error("文章标题与待发布标题不一致");
+          return "#title";
         },
         renderUploadedArticle: () => "<p>完整测试正文</p>",
         pasteArticleHtml: async (_page, _editor, _html, _plain, _context, _images, options) => {
-          assert.strictEqual(options.verifyWholeBody, true);
+          assert.deepStrictEqual(options, { preferKeyboardForPlain: true, verifyWholeBody: true });
+          assert.deepStrictEqual(_images, []);
           sequence.push("body");
         },
         confirmToutiaoBodyAccepted: async () => { sequence.push("word-count"); },
-        fillArticleMetadata: async () => {},
+        fillArticleMetadata: async () => { sequence.push("metadata"); },
         currentUrl: () => before,
         confirmToutiaoDraftAutosave: async (_page, _title, _timeout, _observer, options) => {
+          sequence.push("draft-save");
           saveOptions.push(options);
           return { confirmed: true };
         },
-        uploadToutiaoImage: async () => { sequence.push("inline-upload"); return "https://example.com/cover.png"; },
-        uploadToutiaoCover: async (_page, _editor, _asset, waitForSave) => {
-          assert.strictEqual(waitForSave, true);
-          sequence.push("cover-upload");
-          return "https://example.com/cover.png";
-        },
-        selectToutiaoCover: async (_page, _url, waitForSave) => {
-          assert.strictEqual(waitForSave, true);
-          sequence.push("cover-select");
-        },
+        captureArticleNotices: async () => { sequence.push("notices"); return []; },
+        clickArticleAction: async () => { publishClicks++; sequence.push("publish"); },
+        confirmPlatformOutcome: async () => { sequence.push("publish-outcome"); return true; },
         finishArticle: async () => { sequence.push("finished"); },
-        failArticle: async () => { sequence.push("failed"); },
+        failArticle: async (_page, _data, _window, _event, error, clicked) => {
+          sequence.push("failed");
+          titleFailures.push({ message: error.message, clicked });
+        },
       };
       const draftPage = { click: async selector => {
         assert.strictEqual(selector, "#title");
@@ -551,8 +734,9 @@ try {
       } };
       const draftData = { publishToDraft: true, data: { title: "测试标题", content: "完整测试正文", images: [] } };
       await publishToutiaoArticle(draftPage, draftData, null, null);
-      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "blur", "finished", "stop"]);
-      assert.deepStrictEqual(saveOptions.at(-1), { expectedHtml: "<p>完整测试正文</p>", coverUrl: "" });
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>",
+        "body", "word-count", "title-check", "blur", "metadata", "title-check", "draft-save", "finished", "stop"]);
+      assert.deepStrictEqual(saveOptions.at(-1), { expectedHtml: "<p>完整测试正文</p>" });
       sequence.length = 0;
       await publishToutiaoArticle({
         ...draftPage,
@@ -560,47 +744,64 @@ try {
         evaluate: async () => { sequence.push("blur-fallback"); },
       }, draftData, null, null);
       assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>",
-        "body", "word-count", "blur-fallback", "finished", "stop"]);
+        "body", "word-count", "title-check", "blur-fallback", "metadata", "title-check", "draft-save", "finished", "stop"]);
       sequence.length = 0;
-      global.__ttAdapterMocks.confirmToutiaoDraftAutosave = async () => ({ confirmed: false, reason: "完整正文保存未确认" });
+      global.__ttAdapterMocks.confirmToutiaoDraftAutosave = async () => {
+        sequence.push("draft-save");
+        return { confirmed: false, reason: "完整正文保存未确认" };
+      };
       await publishToutiaoArticle(draftPage, draftData, null, null);
-      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "blur", "failed", "stop"]);
+      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>",
+        "body", "word-count", "title-check", "blur", "metadata", "title-check", "draft-save", "failed", "stop"]);
       sequence.length = 0;
       global.__ttAdapterMocks.confirmToutiaoDraftAutosave = async (_page, _title, _timeout, _observer, options) => {
+        sequence.push("draft-save");
         saveOptions.push(options);
         return { confirmed: true };
       };
-      await publishToutiaoArticle(draftPage, {
-        ...draftData, data: { ...draftData.data, coverPath: "/tmp/cover.png", coverMime: "image/png" },
-      }, null, null);
-      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>", "body", "word-count", "blur", "body-saved", "cover-upload", "finished", "stop"]);
-      assert.deepStrictEqual(saveOptions.at(-1), {
-        expectedHtml: "<p>完整测试正文</p>", coverUrl: "https://example.com/cover.png",
-      });
-      sequence.length = 0;
-      global.__ttAdapterMocks.uploadToutiaoCover = async () => {
-        sequence.push("cover-save-unconfirmed");
-        throw new Error("头条封面已显示，但未确认草稿已保存");
+      const manualContent = "开头文字\n\n【配图 1：图片 A，请在头条后台手动上传】\n\n结尾文字";
+      const manualDraftData = { ...draftData, data: { ...draftData.data, content: manualContent } };
+      const manualHtml = tools.renderUploadedArticle(manualDraftData, {});
+      assert.match(manualHtml, /配图 1：图片 A，请在头条后台手动上传/u);
+      assert.doesNotMatch(manualHtml, /<img\b|ebao-asset:\/\//u, "手动配图占位不得生成上传 URL 或远端图片");
+      const normalRender = global.__ttAdapterMocks.renderUploadedArticle;
+      global.__ttAdapterMocks.renderUploadedArticle = (data, uploaded) => {
+        assert.deepStrictEqual(uploaded, {}, "头条手动草稿不会自动上传正文或封面");
+        return tools.renderUploadedArticle(data, uploaded);
       };
-      await publishToutiaoArticle(draftPage, {
-        ...draftData, data: { ...draftData.data, coverPath: "/tmp/cover.png", coverMime: "image/png" },
-      }, null, null);
-      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>",
-        "body", "word-count", "blur", "body-saved", "cover-save-unconfirmed", "failed", "stop"]);
-      sequence.length = 0;
-      observer.waitForFullBodySave = async () => {
-        sequence.push("body-save-unconfirmed");
-        return { confirmed: false, reason: "正文尚未保存" };
+      await publishToutiaoArticle(draftPage, manualDraftData, null, null);
+      assert.deepStrictEqual(sequence, ["expect", "title", `expect-html:${manualHtml}`,
+        "body", "word-count", "title-check", "blur", "metadata", "title-check", "draft-save", "finished", "stop"]);
+      assert.deepStrictEqual(saveOptions.at(-1), { expectedHtml: manualHtml });
+      global.__ttAdapterMocks.renderUploadedArticle = normalRender;
+      const publishPage = { ...draftPage,
+        waitForTimeout: async timeout => { assert.strictEqual(timeout, 600); sequence.push("preview-delay"); },
+        evaluate: async () => false,
       };
-      await publishToutiaoArticle(draftPage, {
-        ...draftData, data: { ...draftData.data, coverPath: "/tmp/cover.png", coverMime: "image/png" },
-      }, null, null);
-      assert.deepStrictEqual(sequence, ["expect", "title", "expect-html:<p>完整测试正文</p>",
-        "body", "word-count", "blur", "body-save-unconfirmed", "failed", "stop"]);
+      const publishData = { ...draftData, publishToDraft: false };
+      sequence.length = 0;
+      await publishToutiaoArticle(publishPage, publishData, null, null);
+      assert.deepStrictEqual(sequence, ["title", "body", "word-count", "title-check", "blur", "metadata",
+        "notices", "title-check", "publish", "preview-delay", "publish-outcome", "finished"]);
+      assert.strictEqual(publishClicks, 1);
+      // 标题有丢字时正文仍先写入；正文后和提交前任一核对失败，都不能点击发布。
+      for (const failedCheck of [1, 2]) {
+        sequence.length = 0;
+        publishClicks = 0;
+        failTitleCheck = failedCheck;
+        await publishToutiaoArticle(publishPage, publishData, null, null);
+        assert.deepStrictEqual(sequence, failedCheck === 1
+          ? ["title", "body", "word-count", "title-check", "failed"]
+          : ["title", "body", "word-count", "title-check", "blur", "metadata", "notices", "title-check", "failed"]);
+        assert.strictEqual(publishClicks, 0, "标题错误不能点发布");
+        assert.deepStrictEqual(titleFailures.at(-1), { message: "文章标题与待发布标题不一致", clicked: false });
+      }
+      failTitleCheck = 0;
       delete global.__ttAdapterMocks;
 
       const originalDataTransfer = global.DataTransfer;
       const originalClipboardEvent = global.ClipboardEvent;
+      const originalWindow = global.window;
       global.DataTransfer = class {
         values = {};
         setData(type, value) { this.values[type] = value; }
@@ -709,6 +910,7 @@ try {
       } finally {
         global.DataTransfer = originalDataTransfer;
         global.ClipboardEvent = originalClipboardEvent;
+        global.window = originalWindow;
       }
 
       const calls = [];
@@ -728,247 +930,90 @@ try {
       assert.strictEqual(calls[2].status, true);
       assert.strictEqual(calls[2].draftUrl, undefined);
 
-      const fileInput = (accept, parentElement = null, id = "") => {
-        const attributes = { accept };
-        return {
-          id, parentElement,
-          getAttribute: name => attributes[name] || "",
-          setAttribute: (name, value) => { attributes[name] = value; },
-          removeAttribute: name => { delete attributes[name]; },
-        };
-      };
-      const imagePanelClicks = [];
-      const confirmButton = {
-        textContent: "确定", disabled: true,
-        getAttribute: () => "",
-        getBoundingClientRect: () => ({ width: 80, height: 30 }),
-        click: () => imagePanelClicks.push("panel-confirm"),
-      };
-      const panelAttributes = {};
-      const imagePanel = {
-        textContent: "上传图片 我的素材 本地上传 已上传 0 张图片",
-        parentElement: null,
-        matches: selector => selector.includes("[role='dialog']"),
-        querySelectorAll: selector => selector === "button,[role='button']" ? [confirmButton] : [],
-        getBoundingClientRect: () => ({ width: 400, height: 300 }),
-        setAttribute: (name, value) => { panelAttributes[name] = value; },
-        removeAttribute: name => { delete panelAttributes[name]; },
-      };
-      const localControl = textContent => ({
-        textContent, parentElement: imagePanel,
-        matches: selector => selector.includes("label"),
-        querySelectorAll: () => [],
-        getBoundingClientRect: () => ({ width: 100, height: 30 }),
-      });
-      const localImage = fileInput("", localControl("本地上传 Choose Files"));
-      const unrelatedVideo = fileInput("video/*", localControl("本地上传 Choose Files"));
-      const unrelatedGeneric = fileInput("", imagePanel);
-      let panelInputs = [unrelatedVideo, unrelatedGeneric, localImage];
-      global.document = {
-        body: {},
-        querySelectorAll: selector => selector === "input[type='file']" ? panelInputs
-          : selector === "[data-ebao-toutiao-image-panel]" && panelAttributes["data-ebao-toutiao-image-panel"]
-            ? [imagePanel] : [],
-        querySelector: selector => selector === "[data-ebao-toutiao-image-panel='true']"
-          && panelAttributes["data-ebao-toutiao-image-panel"] ? imagePanel : null,
-      };
-      assert.strictEqual(upload.markToutiaoImageFileInput(), "input[data-ebao-inline-upload='true']");
-      assert.strictEqual(localImage.getAttribute("data-ebao-inline-upload"), "true");
-      assert.strictEqual(unrelatedGeneric.getAttribute("data-ebao-inline-upload"), "");
-      assert.strictEqual(unrelatedVideo.getAttribute("data-ebao-inline-upload"), "");
-      assert.strictEqual(panelAttributes["data-ebao-toutiao-image-panel"], "true");
-      assert.strictEqual(upload.readToutiaoImagePanelUploadCount(), 0);
-      assert.strictEqual(upload.isToutiaoImagePanelUploadReady(0), false);
-      assert.strictEqual(upload.clickToutiaoImagePanelConfirm(0), false);
-      imagePanel.textContent = "上传图片 我的素材 本地上传 已上传 1 张图片";
-      confirmButton.disabled = false;
-      assert.strictEqual(upload.isToutiaoImagePanelUploadReady(0), true);
-      assert.strictEqual(upload.clickToutiaoImagePanelConfirm(0), true);
-      assert.deepStrictEqual(imagePanelClicks, ["panel-confirm"]);
-      assert.strictEqual(upload.isToutiaoImagePanelUploadReady(1), false);
-
-      const fallbackImage = fileInput("image/png,.jpg", imagePanel);
-      panelInputs = [unrelatedGeneric, fallbackImage];
-      assert.strictEqual(upload.markToutiaoImageFileInput(), "input[data-ebao-inline-upload='true']");
-      assert.strictEqual(fallbackImage.getAttribute("data-ebao-inline-upload"), "true");
-      panelInputs = [fallbackImage, fileInput("image/webp", imagePanel)];
-      assert.strictEqual(upload.markToutiaoImageFileInput(), "");
-      panelInputs = [unrelatedVideo, unrelatedGeneric];
-      assert.strictEqual(upload.markToutiaoImageFileInput(), "");
-      imagePanel.matches = () => false;
-      panelInputs = [localImage];
-      assert.strictEqual(upload.markToutiaoImageFileInput(), "input[data-ebao-inline-upload='true']");
-      imagePanel.matches = selector => selector.includes("[role='dialog']");
-      imagePanel.getBoundingClientRect = () => ({ width: 0, height: 0 });
-      assert.strictEqual(upload.markToutiaoImageFileInput(), "");
-      imagePanel.getBoundingClientRect = () => ({ width: 400, height: 300 });
-
-      const addClicks = [];
-      const addButton = {
-        textContent: "+", getAttribute: () => "",
-        getBoundingClientRect: () => ({ width: 36, height: 36 }),
-        click: () => addClicks.push("plus"),
-      };
-      const coverArea = {
-        querySelectorAll: () => [addButton], click: () => addClicks.push("area"),
-      };
-      global.document.querySelector = selector => selector === ".article-cover-images-wrap" ? coverArea : null;
-      assert.strictEqual(upload.openToutiaoCoverPanel(), true);
-      assert.deepStrictEqual(addClicks, ["plus"]);
-
-      const originalMutationObserver = global.MutationObserver;
-      const savedMarker = {
-        textContent: "草稿已保存",
-        getBoundingClientRect: () => ({ width: 100, height: 20 }),
-      };
-      let savedMarkers = [savedMarker];
-      let coverImages = [];
-      let onMutation;
-      let disconnected = false;
-      global.MutationObserver = class {
-        constructor(callback) { onMutation = callback; }
-        observe() {}
-        disconnect() { disconnected = true; }
-      };
-      global.document = { body: {}, querySelectorAll: selector =>
-        selector === ".article-cover-images-wrap img" ? coverImages : savedMarkers };
-      try {
-        upload.startToutiaoCoverSaveWatch();
-        assert.strictEqual(upload.hasToutiaoCoverSaveTransition(), false);
-        onMutation(); // A pre-existing saved marker is not a new cover save.
-        assert.strictEqual(upload.hasToutiaoCoverSaveTransition(), false);
-        savedMarkers = [];
-        onMutation();
-        savedMarkers = [savedMarker];
-        onMutation();
-        assert.strictEqual(upload.hasToutiaoCoverSaveTransition(), false);
-        coverImages = [{ getAttribute: () => "https://example.com/cover.png" }];
-        onMutation();
-        assert.strictEqual(upload.hasToutiaoCoverSaveTransition(), false);
-        savedMarkers = [];
-        onMutation();
-        savedMarkers = [savedMarker];
-        onMutation();
-        assert.strictEqual(upload.hasToutiaoCoverSaveTransition(), true);
-        upload.stopToutiaoCoverSaveWatch();
-        assert.strictEqual(disconnected, true);
-      } finally {
-        global.MutationObserver = originalMutationObserver;
-      }
-
-      const titleElement = {};
-      const articleRoot = {
-        parentElement: null, contains: element => element === titleElement,
-        querySelectorAll: selector => selector.includes("toolbar") ? [toolbarElement] : toolbarButtons,
-      };
-      const editorElement = { parentElement: articleRoot };
-      const clickedButtons = [];
-      const toolbarButtons = Array.from({ length: 12 }, (_, index) => ({
-        textContent: "", getAttribute: name => index === 3 && name === "title" ? "" : "",
-        getBoundingClientRect: () => ({ top: 160, bottom: 188, left: 100 + index * 35,
-          right: 128 + index * 35, width: 28, height: 28 }),
-        click: () => clickedButtons.push(index),
-      }));
-      const toolbarElement = {
-        getBoundingClientRect: () => ({ top: 155, bottom: 190, left: 100, right: 540, width: 440, height: 35 }),
-        getAttribute: () => "", querySelectorAll: () => toolbarButtons,
-      };
-      global.document = {
-        querySelector: selector => selector === "#editor" ? editorElement : titleElement,
-      };
-      assert.strictEqual(upload.clickToutiaoImageToolbarButton("#editor"), true);
-      assert.deepStrictEqual(clickedButtons, [11]);
-      toolbarButtons[3].getAttribute = name => name === "title" ? "插入图片" : "";
-      assert.strictEqual(upload.clickToutiaoImageToolbarButton("#editor"), true);
-      assert.deepStrictEqual(clickedButtons, [11, 3]);
-      toolbarButtons[3].getAttribute = () => "";
-      toolbarButtons[11].textContent = "发布";
-      assert.strictEqual(upload.clickToutiaoImageToolbarButton("#editor"), false);
-      assert.deepStrictEqual(clickedButtons, [11, 3]);
-      let evaluations = 0;
-      await assert.rejects(upload.uploadToutiaoImage({
-        evaluate: async () => ++evaluations === 1 ? [] : false,
-        click: async () => {},
-      }, "#editor", { path: "/tmp/image.png", mime: "image/png" }), /未找到头条文章图片工具栏按钮/u);
-      assert.strictEqual(evaluations, 2);
-
       const image = path.join(temporary, "test.png");
       fs.writeFileSync(image, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]));
-      const coverSteps = [];
-      let coverRead = 0;
-      const coverPage = {
-        evaluate: async callback => {
-          if (!callback.name) return ++coverRead === 1
-            ? { cover: [], body: [] } : { cover: "https://example.com/cover.png", body: [] };
-          coverSteps.push(callback.name);
-          if (callback.name === "openToutiaoCoverPanel") return true;
-          if (callback.name === "markToutiaoImageFileInput") return "input[data-ebao-inline-upload='true']";
-          if (callback.name === "readToutiaoImagePanelUploadCount") return 0;
-          if (callback.name === "clickToutiaoImagePanelConfirm") return true;
-          return undefined;
-        },
-        $: async () => ({ uploadFile: async () => { coverSteps.push("uploadFile"); } }),
-        waitForFunction: async callback => { coverSteps.push(`wait:${callback.name || "cover-image"}`); },
-        click: async () => { throw new Error("cover upload must not click the editor"); },
+      assert.deepStrictEqual(Object.keys(upload).sort(), ["selectBaijiahaoCover", "uploadBaijiahaoImage"],
+        "上传模块只保留百家号正文上传与封面选择");
+      assert.deepStrictEqual(Object.keys(productionUpload).sort(), Object.keys(upload).sort());
+      let baijiahaoRequests = 0;
+      assert.strictEqual(await productionUpload.uploadBaijiahaoImage({
+        evaluate: async (callback, ...args) => executeBrowserFunction(callback, {
+          atob, Blob,
+          FormData: class {
+            constructor() { this.entries = new Map(); }
+            append(name, value) { this.entries.set(name, value); }
+          },
+          fetch: async (route, request) => {
+            baijiahaoRequests++;
+            assert.strictEqual(route, "/pcui/picture/uploadproxy");
+            assert.strictEqual(request.method, "POST");
+            assert.strictEqual(request.body.entries.get("media").type, "image/png");
+            return { ok: true, json: async () => ({ errno: 0, errmsg: "success",
+              ret: { https_url: "https://example.com/baijiahao.png" } }) };
+          },
+        }, args),
+      }, { path: image, mime: "image/png" }), "https://example.com/baijiahao.png",
+      "百家号注入回调也只依赖浏览器 globals，不依赖被编译提升的 async helper");
+      assert.strictEqual(baijiahaoRequests, 1, "仅使用离线 fetch fixture，不发平台请求");
+      const baijiahaoCoverUrl = "https://example.com/baijiahao.png";
+      const coverChoiceAttributes = {};
+      const baijiahaoCoverSteps = [];
+      let coverImages = [];
+      const baijiahaoCoverArea = {
+        click: () => baijiahaoCoverSteps.push("open"),
+        querySelectorAll: () => coverImages,
       };
-      assert.strictEqual(await upload.uploadToutiaoCover(coverPage, "#editor",
-        { path: image, mime: "image/png" }, true), "https://example.com/cover.png");
-      assert.deepStrictEqual(coverSteps, [
-        "openToutiaoCoverPanel", "markToutiaoImageFileInput", "readToutiaoImagePanelUploadCount",
-        "uploadFile", "wait:isToutiaoImagePanelUploadReady", "startToutiaoCoverSaveWatch",
-        "clickToutiaoImagePanelConfirm", "wait:cover-image", "wait:hasToutiaoCoverSaveTransition",
-        "stopToutiaoCoverSaveWatch",
-      ]);
-      coverSteps.length = 0;
-      coverRead = 0;
-      coverPage.waitForFunction = async callback => {
-        coverSteps.push(`wait:${callback.name || "cover-image"}`);
-        if (callback.name === "hasToutiaoCoverSaveTransition") throw new Error("timeout");
-      };
-      coverPage.goto = async () => { throw new Error("unconfirmed cover must not navigate"); };
-      await assert.rejects(upload.uploadToutiaoCover(coverPage, "#editor",
-        { path: image, mime: "image/png" }, true), /未确认草稿已保存/u);
-      assert.strictEqual(coverSteps.at(-1), "stopToutiaoCoverSaveWatch");
-
-      const reusedCoverSteps = [];
-      const reusedCoverPage = {
-        evaluate: async callback => {
-          reusedCoverSteps.push(callback.name || "cover-picker-action");
-          return true;
+      const coverConfirm = {
+        textContent: "确定", disabled: false, getAttribute: () => "",
+        getBoundingClientRect: () => ({ width: 80, height: 30 }),
+        click: () => {
+          baijiahaoCoverSteps.push("confirm");
+          coverImages = [{ src: baijiahaoCoverUrl }];
         },
-        waitForFunction: async callback => {
-          reusedCoverSteps.push(`wait:${callback.name || "cover-picker"}`);
-          if (callback.name === "hasToutiaoCoverSaveTransition") throw new Error("timeout");
-        },
-        goto: async () => { throw new Error("unconfirmed cover must not navigate"); },
       };
-      await assert.rejects(upload.selectToutiaoCover(reusedCoverPage,
-        "https://example.com/cover.png", true), /未确认草稿已保存/u);
-      assert.strictEqual(reusedCoverSteps.at(-1), "stopToutiaoCoverSaveWatch");
-
-      const inlineSteps = [];
-      let inlineRead = 0;
-      const inlinePage = {
-        evaluate: async callback => {
-          if (!callback.name) return ++inlineRead === 1 ? [] : "https://example.com/inline.png";
-          inlineSteps.push(callback.name);
-          if (callback.name === "clickToutiaoImageToolbarButton") return true;
-          if (callback.name === "markToutiaoImageFileInput") return "input[data-ebao-inline-upload='true']";
-          if (callback.name === "readToutiaoImagePanelUploadCount") return 0;
-          if (callback.name === "clickToutiaoImagePanelConfirm") return true;
-          return undefined;
-        },
-        $: async () => ({ uploadFile: async () => { inlineSteps.push("uploadFile"); } }),
-        waitForFunction: async callback => { inlineSteps.push(`wait:${callback.name || "editor-image"}`); },
-        click: async selector => { assert.strictEqual(selector, "#editor"); inlineSteps.push("editor-click"); },
+      let coverButtons = [coverConfirm];
+      const coverDialog = {
+        parentElement: null,
+        matches: () => true,
+        querySelectorAll: () => coverButtons,
+        getBoundingClientRect: () => ({ width: 400, height: 300 }),
+        setAttribute: (name, value) => { coverChoiceAttributes[name] = value; },
+        removeAttribute: name => { delete coverChoiceAttributes[name]; },
       };
-      assert.strictEqual(await upload.uploadToutiaoImage(inlinePage, "#editor",
-        { path: image, mime: "image/png" }), "https://example.com/inline.png");
-      assert.deepStrictEqual(inlineSteps, [
-        "editor-click", "clickToutiaoImageToolbarButton", "markToutiaoImageFileInput",
-        "readToutiaoImagePanelUploadCount", "uploadFile", "wait:isToutiaoImagePanelUploadReady",
-        "clickToutiaoImagePanelConfirm", "wait:editor-image",
-      ]);
+      const coverImage = {
+        src: baijiahaoCoverUrl, parentElement: coverDialog,
+        getBoundingClientRect: () => ({ width: 160, height: 100 }),
+        click: () => baijiahaoCoverSteps.push("select-image"),
+      };
+      let pickerImages = [coverImage];
+      const baijiahaoCoverDocument = {
+        body: {},
+        querySelector: selector => selector === "#cover-tabs-container" ? baijiahaoCoverArea
+          : coverChoiceAttributes["data-ebao-cover-choice-panel"] ? coverDialog : null,
+        querySelectorAll: selector => selector === "[data-ebao-cover-choice-panel]"
+          ? coverChoiceAttributes["data-ebao-cover-choice-panel"] ? [coverDialog] : [] : pickerImages,
+      };
+      const baijiahaoCoverPage = {
+        evaluate: async (callback, ...args) => executeBrowserFunction(callback,
+          { document: baijiahaoCoverDocument }, args),
+        waitForFunction: async (callback, _options, ...args) => {
+          assert.strictEqual(executeBrowserFunction(callback, { document: baijiahaoCoverDocument }, args), true);
+        },
+      };
+      await productionUpload.selectBaijiahaoCover(baijiahaoCoverPage, baijiahaoCoverUrl);
+      assert.deepStrictEqual(baijiahaoCoverSteps, ["open", "select-image", "confirm"],
+        "百家号既有封面选择及最终显示核对必须保留，生产注入函数不依赖模块闭包");
+      baijiahaoCoverSteps.length = 0;
+      pickerImages = [coverImage, { ...coverImage }];
+      await assert.rejects(productionUpload.selectBaijiahaoCover(baijiahaoCoverPage, baijiahaoCoverUrl),
+        /封面素材未出现在平台素材库/u);
+      assert.deepStrictEqual(baijiahaoCoverSteps, ["open"], "百家号同 URL 多图时不能任意挑选");
+      baijiahaoCoverSteps.length = 0;
+      pickerImages = [coverImage];
+      coverButtons = [coverConfirm, { ...coverConfirm }];
+      await assert.rejects(productionUpload.selectBaijiahaoCover(baijiahaoCoverPage, baijiahaoCoverUrl),
+        /平台封面选择未确认/u);
+      assert.deepStrictEqual(baijiahaoCoverSteps, ["open", "select-image"], "百家号确认按钮有歧义时不得点击");
       await assert.rejects(upload.uploadBaijiahaoImage({ evaluate: async () => ({ errmsg: "invalid" }) },
         { path: image, mime: "image/png" }), /图片上传失败/u);
       await assert.rejects(upload.uploadBaijiahaoImage({ evaluate: async () => ({ errno: 1, errmsg: "success", ret: { https_url: "https://example.com/a.png" } }) },

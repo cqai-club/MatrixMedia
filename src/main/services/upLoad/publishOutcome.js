@@ -1,6 +1,6 @@
 import maybeClosePublishWindow from "./closeWindow.js";
 import { capturePublishFailureScreenshot } from "./failureScreenshot.js";
-import { shouldKeepToutiaoArticleDraftWindow, TOUTIAO_DRAFT_WINDOW_NOTICE } from "../publishWindowRegistry.js";
+import { isToutiaoWorkerTask, toutiaoFailureMessage } from "../publishWindowRegistry.js";
 
 /** 点击发布后等待页面跳转的时长：平台发布成功会自动跳到成功页/列表页 */
 export const PUBLISH_NAVIGATE_WAIT_MS = 5000;
@@ -92,14 +92,13 @@ export async function replyPublishOutcome({
     );
   }
 
-  let retained = (window?._mmRetainedForInspection || shouldKeepToutiaoArticleDraftWindow(data))
+  let retained = !isToutiaoWorkerTask(data) && window?._mmRetainedForInspection
     && window && !window.isDestroyed();
   if (retained) {
     try {
       window.show();
       window.focus();
       window._mmRetainedForInspection = true;
-      payload.message = `${payload.message}；${TOUTIAO_DRAFT_WINDOW_NOTICE}`;
     } catch {
       retained = false;
     }
@@ -109,9 +108,9 @@ export async function replyPublishOutcome({
   } catch (e) {
     console.error("发布回执发送失败:", e && e.message ? e.message : e);
   }
-  // Worker 超时已把窗口交给用户检查时，迟到的页面回调不能再关窗。
-  if (!retained && !window?._mmRetainedForInspection) {
-    maybeClosePublishWindow(closeWindowData || data, window);
+  if (!retained) {
+    maybeClosePublishWindow(isToutiaoWorkerTask(data)
+      ? { ...(closeWindowData || data), closeWindowAfterPublish: true } : closeWindowData || data, window);
   }
 }
 
@@ -140,11 +139,11 @@ export async function replyPublishFailure({
   closeWindow = true,
 }) {
   const shot = await capturePublishFailureScreenshot(page, data);
-  let retained = (window?._mmRetainedForInspection || shouldKeepToutiaoArticleDraftWindow(data))
+  const isToutiao = isToutiaoWorkerTask(data);
+  let retained = !isToutiao && window?._mmRetainedForInspection
     && window && !window.isDestroyed();
   if (retained) {
     try {
-      // 头条草稿的失败画面仍有诊断价值；任务已经结束，窗口交给用户检查。
       window.show();
       window.focus();
       window._mmRetainedForInspection = true;
@@ -157,13 +156,13 @@ export async function replyPublishFailure({
       ...data,
       ...extraPayload,
       status: false,
-      message: retained ? `${message}；${TOUTIAO_DRAFT_WINDOW_NOTICE}` : message,
+      message: isToutiao ? toutiaoFailureMessage(message, data.publishToDraft ? "draft" : "publish") : message,
       ...(shot ? { failScreenshot: shot } : {}),
     });
   } catch (e) {
     console.error("发布失败回执发送失败:", e && e.message ? e.message : e);
   }
-  if (closeWindow && !retained && !window?._mmRetainedForInspection) {
-    maybeClosePublishWindow(data, window);
+  if ((closeWindow || isToutiao) && !retained) {
+    maybeClosePublishWindow(isToutiao ? { ...data, closeWindowAfterPublish: true } : data, window);
   }
 }

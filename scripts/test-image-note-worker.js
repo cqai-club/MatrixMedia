@@ -56,7 +56,16 @@ async function main() {
       reply("puppeteerFile-done", { taskId: task.taskId, status: false, needsAttention: true, message: "草稿未确认" });
       assert.deepStrictEqual(await pending, { exitCode: 1, status: "unknown", message: "草稿未确认" });
       assert.ok(!fs.existsSync(path.dirname(task.imagePaths[0])));
-      assert.throws(() => run(account, { snapshotDirectory, mode: "publish" }, manifest), /暂只支持转存草稿/u);
+      if (platform === "ks") {
+        assert.throws(() => run(account, { snapshotDirectory, mode: "publish" }, manifest), /暂只支持转存草稿/u);
+      } else {
+        const publish = run(account, { snapshotDirectory, mode: "publish" }, manifest);
+        assert.strictEqual(task.publishToDraft, false);
+        assert.strictEqual(task.publishOptions.maxAttempts, 1);
+        reply("puppeteerFile-done", { taskId: task.taskId, status: true, message: "发布已确认" });
+        assert.deepStrictEqual(await publish, { exitCode: 0, status: "success", message: "发布已确认" });
+        assert.ok(!fs.existsSync(path.dirname(task.imagePaths[0])));
+      }
     }
     globalThis.__imageWindowOpen = true;
     let retainedTask;

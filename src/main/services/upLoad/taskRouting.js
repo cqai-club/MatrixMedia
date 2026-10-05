@@ -20,7 +20,7 @@ export function publisherHandlerKey(data) {
   return !data.textType || data.textType === "local" ? `legacy:${data.pt}` : "";
 }
 
-/** 头条文章草稿使用可见窗口供用户核查。 */
+/** 头条文章草稿运行时使用正常可见页面，任务结束由独立策略自动关窗。 */
 export function usesManualToutiaoArticleWindow(data) {
   return data.publisherWorker === true && data.textType === "article"
     && data.pt === "头条" && data.publishToDraft === true;

@@ -43,37 +43,42 @@ export async function fillArticleTitle(page, title, { stableVisible = false } = 
     if (actual.trim() !== title.trim()) throw new Error("文章标题未写入");
     return TITLE_SELECTOR;
   }
-  const selector = await page.evaluate(candidateSelector => {
+  let selector = await locateVisibleArticleTitle(page);
+  await page.click(selector, { clickCount: 3 });
+  await page.keyboard.press("Backspace");
+  // Clearing a controlled input can replace its DOM node. Refocus the current
+  // visible input and insert the complete title before moving on to the body.
+  selector = await locateVisibleArticleTitle(page, true);
+  await page.keyboard.sendCharacter(title);
+  return selector;
+}
+
+async function locateVisibleArticleTitle(page, focus = false, expectedTitle = null) {
+  const result = await page.evaluate((candidateSelector, shouldFocus, expected) => {
     const candidates = [...document.querySelectorAll(candidateSelector)].filter(element => {
       const rect = element.getBoundingClientRect();
       return rect.width > 200 && rect.height > 0
         && getComputedStyle(element).visibility !== "hidden";
     });
     if (candidates.length !== 1) return "";
+    if (expected !== null && String(candidates[0].value || "").trim() !== expected) {
+      return "";
+    }
     for (const element of document.querySelectorAll("[data-ebao-article-title]")) {
       element.removeAttribute("data-ebao-article-title");
     }
     candidates[0].setAttribute("data-ebao-article-title", "true");
+    if (shouldFocus) candidates[0].focus();
     return "[data-ebao-article-title='true']";
-  }, TITLE_SELECTOR);
-  if (!selector) throw new Error("文章标题输入框未能唯一定位");
-  await page.click(selector, { clickCount: 3 });
-  await page.keyboard.press("Backspace");
-  await page.type(selector, title, { delay: 25 });
-  try {
-    await page.waitForFunction((candidateSelector, expected) => {
-      const candidates = [...document.querySelectorAll(candidateSelector)].filter(element => {
-        const rect = element.getBoundingClientRect();
-        return rect.width > 200 && rect.height > 0
-          && getComputedStyle(element).visibility !== "hidden";
-      });
-      if (candidates.length !== 1 || String(candidates[0].value || "").trim() !== expected) return false;
-      // React may replace the input while page.type is still completing.
-      candidates[0].setAttribute("data-ebao-article-title", "true");
-      return true;
-    }, { timeout: 5000 }, TITLE_SELECTOR, title.trim());
-  } catch { throw new Error("文章标题未写入"); }
-  return selector;
+  }, TITLE_SELECTOR, focus, expectedTitle);
+  if (!result) throw new Error(expectedTitle === null
+    ? "文章标题输入框未能唯一定位" : "文章标题与待发布标题不一致");
+  return result;
+}
+
+/** Read the current title once; title entry never waits for autosave. */
+export async function verifyVisibleArticleTitle(page, title) {
+  return locateVisibleArticleTitle(page, false, title.trim());
 }
 
 export async function pasteArticleHtml(page, editor, html, plain, context = page, expectedImages = [], options = {}) {
@@ -218,10 +223,12 @@ async function readToutiaoDraftSaveMarker(page) {
 export function observeToutiaoDraftSave(page) {
   let expectedTitle = "";
   let expectedBodyText = "";
+  let expectationVersion = 0;
   const initial = { requests: new Set(), responses: 0, failures: 0, lastCode: undefined,
     httpStatus: undefined, invalidResponse: false, saved: false };
   const full = { requests: new Set(), responses: 0, failures: 0, lastCode: undefined,
-    httpStatus: undefined, invalidResponse: false, saved: false };
+    httpStatus: undefined, invalidResponse: false, saved: false,
+    draftIds: new Set(), draftUrl: "", draftIdMismatch: false };
   let changedPath = false;
   let changedPayload = false;
   let partialBody = false;
@@ -297,6 +304,7 @@ export function observeToutiaoDraftSave(page) {
   };
   const onResponse = async response => {
     try {
+      const version = expectationVersion;
       const request = response.request();
       const match = inspect(request);
       if (!match) return;
@@ -311,9 +319,13 @@ export function observeToutiaoDraftSave(page) {
       let result;
       try { result = await response.json(); }
       catch {
+        if (version !== expectationVersion) return;
         stage.invalidResponse = true;
         return;
       }
+      // A response that started before the final body was expected cannot
+      // identify the newly written draft, even when it finishes later.
+      if (version !== expectationVersion) return;
       const code = typeof result?.code === "string" && /^\d+$/u.test(result.code)
         ? Number(result.code) : result?.code;
       if (!Number.isSafeInteger(code)) {
@@ -321,8 +333,22 @@ export function observeToutiaoDraftSave(page) {
         return;
       }
       stage.lastCode = code;
-      // A visible editor may create its first draft with the full body and no
-      // pgc_id. The platform's business response and draft-list check remain required.
+      if (code === 0 && stage === full) {
+        // Only the matched successful full-body save may identify this draft.
+        // First creation can omit the request ID and return it in the receipt.
+        for (const value of [match.fields.get("pgc_id"), result?.pgc_id, result?.data?.pgc_id]) {
+          const draftId = toutiaoDraftId(value);
+          if (draftId) full.draftIds.add(draftId);
+        }
+        full.draftIdMismatch = full.draftIds.size > 1;
+        if (full.draftIdMismatch) {
+          full.saved = false;
+          return;
+        }
+        const [draftId] = full.draftIds;
+        if (draftId) full.draftUrl = canonicalToutiaoDraftUrl(
+          `https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=${encodeURIComponent(draftId)}`);
+      }
       stage.saved = code === 0;
     } catch { /* Navigation can dispose a response before its body is available. */ }
   };
@@ -331,9 +357,10 @@ export function observeToutiaoDraftSave(page) {
   page.on("response", onResponse);
   return {
     expect(title, body, renderedHtml) {
+      expectationVersion++;
       expectedTitle = String(title || "").trim();
-      // The adapter supplies its final rendered HTML after image uploads. The
-      // Markdown fallback keeps existing callers and title-only saves working.
+      // The adapter supplies the final rendered body, including manual-image
+      // placeholders. Markdown remains the fallback for existing callers.
       let html = renderedHtml;
       if (html === undefined) {
         try { html = renderArticleHtml({ body: String(body || ""), assets: [] }, {}); }
@@ -348,6 +375,9 @@ export function observeToutiaoDraftSave(page) {
         full.httpStatus = undefined;
         full.invalidResponse = false;
         full.saved = false;
+        full.draftIds.clear();
+        full.draftUrl = "";
+        full.draftIdMismatch = false;
         partialBody = false;
         finalBodyExpected = true;
         diagnostic.relatedPosts.clear();
@@ -380,13 +410,16 @@ export function observeToutiaoDraftSave(page) {
     },
     async waitForFullBodySave(timeout = 30000) {
       const deadline = Date.now() + timeout;
-      while (!full.saved && Date.now() < deadline) {
+      while (!full.saved && !full.draftIdMismatch && Date.now() < deadline) {
         diagnostic.saveMarker = await readToutiaoDraftSaveMarker(page);
         if (!full.saved) await new Promise(resolve => setTimeout(resolve, 100));
       }
-      if (full.saved) return { confirmed: true };
+      if (full.saved && !full.draftIdMismatch) return { confirmed: true,
+        ...(full.draftUrl ? { draftUrl: full.draftUrl } : {}) };
       let reason = "未观察到头条完整正文的草稿保存请求";
-      if (full.lastCode !== undefined && full.lastCode !== 0) {
+      if (full.draftIdMismatch) {
+        reason = "头条完整正文保存回执中的草稿 ID 不一致";
+      } else if (full.lastCode !== undefined && full.lastCode !== 0) {
         reason = `头条完整正文草稿保存接口拒绝（错误码 ${full.lastCode}）`;
       } else if (full.httpStatus !== undefined) {
         reason = `头条完整正文草稿保存接口返回 HTTP ${full.httpStatus}`;
@@ -440,6 +473,12 @@ export async function confirmToutiaoInitialDraftAutosave(page, title, saveObserv
   } catch { return { confirmed: false, reason: "头条初始草稿尚未在页面确认，未继续填写正文" }; }
 }
 
+function toutiaoDraftId(value) {
+  const id = typeof value === "string" ? value.trim()
+    : Number.isSafeInteger(value) && value > 0 ? String(value) : "";
+  return id !== "0" && /^[a-z\d_-]{1,128}$/iu.test(id) ? id : "";
+}
+
 export function canonicalToutiaoDraftUrl(rawUrl) {
   try {
     const url = new URL(rawUrl);
@@ -455,24 +494,25 @@ export function canonicalToutiaoDraftUrl(rawUrl) {
 
 /** Toutiao autosaves; a stale failure toast can coexist with a newer save. */
 export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000, saveObserver,
-  { expectedHtml, coverUrl } = {}) {
+  { expectedHtml } = {}) {
   const saved = await saveObserver.waitForFullBodySave(timeout);
   if (!saved.confirmed) return saved;
-  try {
-    await page.goto("https://mp.toutiao.com/profile_v4/manage/draft", {
-      waitUntil: "domcontentloaded", timeout: 15000,
-    });
-    await page.waitForFunction(expected => [...document.querySelectorAll("a,span,p,div,h1,h2,h3,h4")]
-      .filter(element => element.getBoundingClientRect().width > 0
-        && String(element.textContent || "").trim() === expected
-        && ![...element.children].some(child => String(child.textContent || "").trim() === expected)).length === 1,
-    { timeout: 15000 }, title);
-  } catch { return { confirmed: false, reason: "头条草稿箱未确认这篇文章" }; }
+  const savedDraftUrl = canonicalToutiaoDraftUrl(saved.draftUrl || "");
+  if (!savedDraftUrl) {
+    try {
+      await page.goto("https://mp.toutiao.com/profile_v4/manage/draft", {
+        waitUntil: "domcontentloaded", timeout: 15000,
+      });
+      await page.waitForFunction(expected => [...document.querySelectorAll("a,span,p,div,h1,h2,h3,h4")]
+        .filter(element => element.getBoundingClientRect().width > 0
+          && String(element.textContent || "").trim() === expected
+          && ![...element.children].some(child => String(child.textContent || "").trim() === expected)).length === 1,
+      { timeout: 15000 }, title);
+    } catch { return { confirmed: false, reason: "头条草稿箱未确认这篇文章" }; }
+  }
 
-  // Existing callers only need the exact-title list check. Toutiao's cover
-  // picker can save after the body, so callers with final expectations reopen
-  // the draft and verify the persisted editor and cover separately.
-  if (expectedHtml === undefined && !coverUrl) return { confirmed: true };
+  // Reopen the identified draft to verify that its full text was persisted.
+  if (!savedDraftUrl && expectedHtml === undefined) return { confirmed: true };
   const expectedBodyText = expectedHtml === undefined ? "" : compactArticleText(expectedHtml);
   if (expectedHtml !== undefined && !expectedBodyText) {
     return { confirmed: false, reason: "头条草稿正文没有可验证的文本" };
@@ -480,89 +520,87 @@ export async function confirmToutiaoDraftAutosave(page, title, timeout = 30000, 
   let editPage = null;
   let verificationStage = "open";
   try {
-    const entry = await page.evaluate(expected => {
-      for (const element of document.querySelectorAll("[data-ebao-draft-edit]")) {
-        element.removeAttribute("data-ebao-draft-edit");
-      }
-      const titles = [...document.querySelectorAll("a,span,p,div,h1,h2,h3,h4")]
-        .filter(element => element.getBoundingClientRect().width > 0
-          && String(element.textContent || "").trim() === expected
-          && ![...element.children].some(child => String(child.textContent || "").trim() === expected));
-      if (titles.length !== 1) return null;
-      for (let row = titles[0]; row && row !== document.body; row = row.parentElement) {
-        const controls = [...row.querySelectorAll("a,button,[role='link'],[role='button']")]
+    let editHref = savedDraftUrl;
+    if (savedDraftUrl) {
+      await page.goto(savedDraftUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+      editPage = page;
+    } else {
+      const entry = await page.evaluate(expected => {
+        for (const element of document.querySelectorAll("[data-ebao-draft-edit]")) {
+          element.removeAttribute("data-ebao-draft-edit");
+        }
+        const titles = [...document.querySelectorAll("a,span,p,div,h1,h2,h3,h4")]
           .filter(element => element.getBoundingClientRect().width > 0
-            && String(element.textContent || "").trim() === "编辑");
-        if (controls.length !== 1) continue;
-        controls[0].setAttribute("data-ebao-draft-edit", "true");
-        return { editHref: controls[0].getAttribute?.("href") || "" };
-      }
-      return null;
-    }, title);
-    if (!entry) return { confirmed: false, reason: "头条草稿箱未找到这篇文章的唯一编辑入口" };
+            && String(element.textContent || "").trim() === expected
+            && ![...element.children].some(child => String(child.textContent || "").trim() === expected));
+        if (titles.length !== 1) return null;
+        for (let row = titles[0]; row && row !== document.body; row = row.parentElement) {
+          const controls = [...row.querySelectorAll("a,button,[role='link'],[role='button']")]
+            .filter(element => element.getBoundingClientRect().width > 0
+              && String(element.textContent || "").trim() === "编辑");
+          if (controls.length !== 1) continue;
+          controls[0].setAttribute("data-ebao-draft-edit", "true");
+          return { editHref: controls[0].getAttribute?.("href") || "" };
+        }
+        return null;
+      }, title);
+      if (!entry) return { confirmed: false, reason: "头条草稿箱未找到这篇文章的唯一编辑入口" };
 
-    let editHref = "";
-    try {
-      const candidate = new URL(entry.editHref, "https://mp.toutiao.com");
-      if (canonicalToutiaoDraftUrl(candidate.href)) editHref = candidate.href;
-    } catch { /* The edit control may navigate through a click handler. */ }
-
-    const browser = typeof page.browser === "function" ? page.browser() : null;
-    const previousTargets = new Set(browser?.targets?.() || []);
-    const isEditTarget = target => {
-      if (previousTargets.has(target)) return false;
       try {
-        const url = new URL(target.url());
-        return Boolean(canonicalToutiaoDraftUrl(url.href));
-      } catch { return false; }
-    };
-    const popup = browser?.waitForTarget && browser?.targets
-      ? browser.waitForTarget(isEditTarget, { timeout: 15000 })
-        .then(target => {
-          const matches = browser.targets().filter(isEditTarget);
-          return matches.length === 1 && matches[0] === target ? target.page() : null;
-        }).catch(() => null)
-      : Promise.resolve(null);
-    await page.click("[data-ebao-draft-edit='true']");
-    editPage = await popup || page;
-    if (editPage === page && editHref && page.url?.() !== editHref) {
-      await page.goto(editHref, { waitUntil: "domcontentloaded", timeout: 15000 });
+        const candidate = new URL(entry.editHref, "https://mp.toutiao.com");
+        if (canonicalToutiaoDraftUrl(candidate.href)) editHref = candidate.href;
+      } catch { /* The edit control may navigate through a click handler. */ }
+
+      const browser = typeof page.browser === "function" ? page.browser() : null;
+      const previousTargets = new Set(browser?.targets?.() || []);
+      const isEditTarget = target => {
+        if (previousTargets.has(target)) return false;
+        try {
+          const url = new URL(target.url());
+          return Boolean(canonicalToutiaoDraftUrl(url.href));
+        } catch { return false; }
+      };
+      const popup = browser?.waitForTarget && browser?.targets
+        ? browser.waitForTarget(isEditTarget, { timeout: 15000 })
+          .then(target => {
+            const matches = browser.targets().filter(isEditTarget);
+            return matches.length === 1 && matches[0] === target ? target.page() : null;
+          }).catch(() => null)
+        : Promise.resolve(null);
+      await page.click("[data-ebao-draft-edit='true']");
+      editPage = await popup || page;
+      if (editPage === page && editHref && page.url?.() !== editHref) {
+        await page.goto(editHref, { waitUntil: "domcontentloaded", timeout: 15000 });
+      }
     }
     const editor = await findArticleEditor(editPage);
+    const expectedDraftUrl = canonicalToutiaoDraftUrl(editHref);
+    if (expectedDraftUrl && canonicalToutiaoDraftUrl(editPage.url?.()) !== expectedDraftUrl) {
+      return { confirmed: false, reason: "头条草稿重新打开后 ID 与目标草稿不一致" };
+    }
     verificationStage = "body";
     await editPage.waitForFunction((titleSelector, editorSelector, expectedTitle, bodyText) => {
-      if (String(document.querySelector(titleSelector)?.value || "").trim() !== expectedTitle) return false;
+      const titles = [...document.querySelectorAll(titleSelector)].filter(element => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 200 && rect.height > 0 && !element.disabled
+          && element.getAttribute("aria-disabled") !== "true"
+          && getComputedStyle(element).visibility !== "hidden";
+      });
+      if (titles.length !== 1 || String(titles[0].value || "").trim() !== expectedTitle) return false;
       if (!bodyText) return true;
       const text = String(document.querySelector(editorSelector)?.textContent || "")
         .normalize("NFC").replace(/[\s\u200B-\u200D\uFEFF\uFFFC]+/gu, "");
       return text.includes(bodyText);
     }, { timeout: 15000 }, TITLE_SELECTOR, editor, title, expectedBodyText);
-    if (coverUrl) {
-      verificationStage = "cover";
-      await editPage.waitForFunction(expectedUrl => {
-        const area = document.querySelector(".article-cover-images-wrap");
-        if (!area || area.getBoundingClientRect().width <= 0) return false;
-        const expected = new URL(expectedUrl);
-        const images = [...area.querySelectorAll("img")]
-          .filter(image => image.complete && image.naturalWidth > 0);
-        const urls = image => [image.currentSrc, image.src, image.getAttribute("src")]
-          .filter(Boolean).map(value => { try { return new URL(value, location.href); } catch { return null; } })
-          .filter(Boolean);
-        const exact = images.filter(image => urls(image).some(url => url.href === expected.href));
-        if (exact.length) return exact.length === 1;
-        if (expected.pathname.length <= 1) return false;
-        const samePath = images.filter(image => urls(image).some(url => url.pathname === expected.pathname));
-        return samePath.length === 1;
-      }, { timeout: 15000 }, coverUrl);
-    }
     const currentDraftUrl = canonicalToutiaoDraftUrl(editPage.url?.());
-    const expectedDraftUrl = canonicalToutiaoDraftUrl(editHref);
+    if (expectedDraftUrl && currentDraftUrl !== expectedDraftUrl) {
+      return { confirmed: false, reason: "头条草稿重新打开后 ID 与目标草稿不一致" };
+    }
     const draftUrl = currentDraftUrl && (!expectedDraftUrl || currentDraftUrl === expectedDraftUrl)
       ? currentDraftUrl : "";
     return { confirmed: true, ...(draftUrl ? { draftUrl } : {}) };
   } catch {
-    const reason = verificationStage === "cover" ? "头条草稿重新打开后未确认封面"
-      : verificationStage === "body" ? "头条草稿重新打开后未确认完整正文"
+    const reason = verificationStage === "body" ? "头条草稿重新打开后未确认完整正文"
         : "头条草稿箱未能重新打开这篇文章的编辑页";
     return { confirmed: false, reason };
   } finally {

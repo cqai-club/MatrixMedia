@@ -83,9 +83,13 @@ const root = path.join(__dirname, "..");
   assert.ok(wechat.messages.some(value => value.includes("公众号封面")));
   assert.ok(wechat.messages.some(value => value.includes("上传前尝试压缩")));
   assert.ok(wechat.messages.some(value => value.includes("64 字")));
-  assert.ok(preparation.prepareTargetArticle({ ...original, title: "标题", summary: "独立摘要", tags: ["话题"] }, "tt")
-    .messages.some(value => value.includes("暂不写入摘要")));
-  for (const platform of ["tt", "bjh", "wxmp"]) {
+  const metadataOnlyToutiao = preparation.prepareTargetArticle({ ...original, title: "标题", body: "正文",
+    assets: [], coverAssetId: null, summary: "独立摘要", tags: ["话题"] }, "tt");
+  assert.deepStrictEqual(metadataOnlyToutiao.messages, []);
+  assert.strictEqual(metadataOnlyToutiao.content.summary, "独立摘要");
+  assert.deepStrictEqual(metadataOnlyToutiao.content.tags, ["话题"]);
+  assert.strictEqual(preparation.modeForPreparedContent("publish", "article", []), "publish");
+  for (const platform of ["bjh", "wxmp"]) {
     assert.ok(preparation.prepareTargetArticle({ ...original, title: "标题", tags: ["话题"] }, platform)
       .messages.some(value => value.includes("暂不写入标签")));
   }

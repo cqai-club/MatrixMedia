@@ -11,6 +11,10 @@ export function validateTargetContent(manifest, account, contentType, capabiliti
   const prepared = contentType === "article"
     ? prepareTargetArticle(projected, account.platform) : { content: projected, messages: [] };
   const { content } = prepared;
+  if (contentType === "image-note" && account.platform === "wxmp") {
+    // 图片消息按用户选择的顺序展示，微信以第一张图片作为封面。
+    content.coverAssetId = content.assets[0]?.id;
+  }
   if (!String(content.title).trim()) throw new PublisherProtocolError("invalid-content", `${account.displayName}标题不能为空`);
   if (contentType === "image-note" && !content.assets.length) {
     throw new PublisherProtocolError("invalid-content", `${account.displayName}图文至少需要一张图片`);
@@ -31,10 +35,13 @@ export function validateTargetContent(manifest, account, contentType, capabiliti
   }
   if (contentType === "article" && ["tt", "bjh", "wxmp"].includes(account.platform)) articleImageIds(content);
   if (contentType === "article" && account.platform === "wxmp") wechatClient.validate(content);
+  if (contentType === "image-note" && account.platform === "wxmp") wechatClient.validateImageNote(content);
   const capability = capabilities.find(item => item.platform === account.platform);
   const required = capability?.requiredFields[contentType] || [];
   const titleLimit = capability?.maxTitleLength[contentType];
-  if (titleLimit && content.title.length > titleLimit) {
+  const titleLength = account.platform === "wxmp" && contentType === "image-note"
+    ? Array.from(content.title).length : content.title.length;
+  if (titleLimit && titleLength > titleLimit) {
     throw new PublisherProtocolError("invalid-content", `${account.displayName}标题不能超过${titleLimit}字`);
   }
   const assetLimit = capability?.maxAssets[contentType];
