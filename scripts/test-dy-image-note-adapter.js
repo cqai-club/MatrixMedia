@@ -47,6 +47,7 @@ function editorPage({
   let submitted = false;
   let closed = false;
   let pollCount = 0;
+  let pollingTime = 0;
   let uploadRound = 0;
   let modalOpen = false;
   let radioChecked = false;
@@ -204,7 +205,8 @@ function editorPage({
       },
     },
     evaluate: async (callback, ...args) => inBrowser(callback, args, document),
-    waitForTimeout: async () => new Promise(resolve => setTimeout(resolve, 1)),
+    // 每次页面轮询推进 1 ms 测试时间，不依赖操作系统的真实定时器精度。
+    waitForTimeout: async () => { pollingTime += 1; },
   };
   const window = {
     isDestroyed: () => closed,
@@ -212,7 +214,17 @@ function editorPage({
     focus: () => actions.push({ type: "window-focus" }),
     close: () => { closed = true; actions.push({ type: "close" }); },
   };
-  return { page, window, actions, title, body, document, targetButton };
+  return { page, window, actions, title, body, document, targetButton, now: () => pollingTime };
+}
+
+async function publishWithFixtureClock(publish, fixture, task, event) {
+  const realNow = Date.now;
+  Date.now = fixture.now;
+  try {
+    await publish(fixture.page, task, fixture.window, event);
+  } finally {
+    Date.now = realNow;
+  }
 }
 
 async function main() {
@@ -250,7 +262,7 @@ async function main() {
     const data = { publisherWorker: true, publishToDraft: true, imagePaths: FILES, data: CONTENT };
     const run = async (fixture, task = data) => {
       const replies = [];
-      await publish(fixture.page, task, fixture.window, { reply: (_channel, payload) => replies.push(payload) });
+      await publishWithFixtureClock(publish, fixture, task, { reply: (_channel, payload) => replies.push(payload) });
       assert.strictEqual(replies.length, 1, "每次必须只交付一个结果");
       assert.ok(fixture.actions.filter(action => ["publish", "draft"].includes(action.type)).length <= 1, "最终提交不得重复");
       scenarios += 1;
@@ -260,7 +272,7 @@ async function main() {
       const fixture = editorPage({ mode, readyAfter: 2 });
       const result = await run(fixture, { ...data, publishToDraft: mode === "draft" });
       assert.strictEqual(result.status, true);
-      assert.strictEqual(result.needsAttention, undefined);
+      assert.strictEqual(result.needsAttention, undefined, result.message);
       assert.strictEqual(result.outcome, mode === "draft" ? "draft_saved" : "published");
       assert.ok(fixture.window.isDestroyed(), "明确成功必须自动关闭窗口");
       assert.strictEqual(fixture.title.value, CONTENT.title);
@@ -403,7 +415,7 @@ async function main() {
     assert.strictEqual(inBrowser(readDouyinImageUploadState, [".semi-upload-file-list", ["first.png", "second.jpg"]], uploadFixture.document).ready, false);
     const deliveryFailure = editorPage({ mode: "publish" });
     let attempts = 0;
-    await publish(deliveryFailure.page, { ...data, publishToDraft: false }, deliveryFailure.window, {
+    await publishWithFixtureClock(publish, deliveryFailure, { ...data, publishToDraft: false }, {
       reply() { attempts += 1; throw new Error("IPC disconnected"); },
     });
     assert.strictEqual(attempts, 1, "回执通道失效不得发送第二份结果或再次提交");
@@ -450,10 +462,10 @@ async function main() {
     ]) {
       const fixture = editorPage(settings);
       const replies = [];
-      await production.default(fixture.page, {
+      await publishWithFixtureClock(production.default, fixture, {
         ...data, publishToDraft: settings.mode === "draft",
         data: { ...CONTENT, creativeStatement: settings.statement ? "ai_generated" : "none" },
-      }, fixture.window, { reply: (_channel, payload) => replies.push(payload) });
+      }, { reply: (_channel, payload) => replies.push(payload) });
       assert.strictEqual(replies.length, 1);
       assert.strictEqual(replies[0].status, true);
       assert.strictEqual(replies[0].needsAttention, undefined, "正式打包后的浏览器注入也必须无 Node 闭包");
