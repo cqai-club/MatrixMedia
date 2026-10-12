@@ -6,7 +6,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import ptConfig from "../config/ptConfig";
 import { applyAccountProxyToSession } from "../services/proxyConfig.js";
-import { hasOpenPublishWindow } from "../services/publishWindowRegistry.js";
+import { hasOpenPublishWindow, focusConflictingPublishWindows } from "../services/publishWindowRegistry.js";
 import { PublisherProtocolError } from "./protocol.js";
 import { publicAccount } from "./store.js";
 import { publisherUserAgent } from "./userAgent.js";
@@ -361,19 +361,36 @@ export class PublisherAccounts {
     if (this.busy(id)) throw new PublisherProtocolError("account-busy", "当前账号正在提交内容，请稍后再试");
     const account = this.require(id);
     if (hasOpenPublishWindow(account.partition)) {
-      throw new PublisherProtocolError("account-window-open", "该账号的发布窗口仍在打开，请核查内容并关闭窗口后再操作");
+      const focused = focusConflictingPublishWindows(account.partition);
+      throw new PublisherProtocolError("account-window-open", focused
+        ? "已唤起该账号的发布窗口，请核对内容并关闭窗口后重试"
+        : "该账号的发布窗口仍在打开，请核对内容并关闭窗口后重试");
     }
   }
 
   assertNoOpenWindow(id) {
     const account = this.require(id);
     if (hasOpenPublishWindow(account.partition)) {
-      throw new PublisherProtocolError("account-window-open", "该账号的发布窗口仍在打开，请核查内容并关闭窗口后再提交");
+      const focused = focusConflictingPublishWindows(account.partition);
+      throw new PublisherProtocolError("account-window-open", focused
+        ? "已唤起该账号的发布窗口，本次提交未开始。请核对内容并关闭窗口后重试发布"
+        : "该账号的发布窗口仍在打开，本次提交未开始。请核对内容并关闭窗口后重试发布");
     }
     const win = this.windows.get(account.partition);
     if (win && win.isDestroyed()) this.windows.delete(account.partition);
     else if (win) {
-      throw new PublisherProtocolError("account-window-open", "请先关闭该账号的登录页或平台后台，再提交发布");
+      let focused = false;
+      try {
+        if (win.isMinimized?.()) win.restore();
+        win.show?.();
+        win.focus();
+        focused = true;
+      } catch (error) {
+        console.warn("唤起已有账号窗口失败:", error?.message || error);
+      }
+      throw new PublisherProtocolError("account-window-open", focused
+        ? "已唤起该账号的登录页或平台后台，本次提交未开始。请核对内容并关闭窗口后重试发布"
+        : "该账号的登录页或平台后台仍在打开，本次提交未开始。请核对内容并关闭窗口后重试发布");
     }
   }
 

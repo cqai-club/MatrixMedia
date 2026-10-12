@@ -12,6 +12,7 @@ const CONTENT_ADAPTERS = {
   "wxmp:article": { requiredFields: [], maxAssets: 20, maxTitleLength: 64 },
 };
 const ARTICLE_MODES = {
+  dy: { requiredFields: [], maxAssets: 20, maxTitleLength: 30 },
   tt: { requiredFields: [], maxAssets: 20 },
   bjh: { requiredFields: [], maxAssets: 20 },
 };
@@ -40,6 +41,7 @@ export function platformCapabilities() {
       modes.article = ["publish", "draft"];
       requiredFields.article = articleSettings.requiredFields;
       maxAssets.article = articleSettings.maxAssets;
+      if (articleSettings.maxTitleLength) maxTitleLength.article = articleSettings.maxTitleLength;
     }
     return {
       platform, contentTypes: types, modes, requiredFields, maxAssets, maxTitleLength,

@@ -1,5 +1,6 @@
 "use strict";
 
+import { canonicalDouyinArticleDraftUrl, DOUYIN_ARTICLE_ENTRY } from "./douyin-article-url.js";
 import ptConfig from "../config/ptConfig.js";
 import { focusOpenPublishWindow } from "../services/publishWindowRegistry.js";
 import { allowsAccountWindowUrl } from "./account-windows.js";
@@ -18,12 +19,13 @@ const BACKEND_ENTRIES = {
 // These are the already configured content management pages. A route that
 // does not cover the submission's content type must use the platform entry.
 const CONTENT_LIST_TYPES = {
-  dy: ["video"], sph: ["video"], blbl: ["article"],
+  dy: ["video", "article"], sph: ["video"], blbl: ["article"],
   bjh: ["video", "article"], tt: ["video", "article"],
   ks: ["video"], xhs: ["video"], juejin: ["article"], fqsp: ["video"],
 };
 
 function verifiedDraftUrl(platform, value) {
+  if (platform === "dy") return canonicalDouyinArticleDraftUrl(value) || null;
   if (typeof value !== "string" || value.length > 2048) return null;
   try {
     const candidate = new URL(value);
@@ -48,7 +50,7 @@ export function resolveSubmissionOpenTarget(submission, target, account, { allow
   const contentType = submission.contentType || "video";
   const platform = target.platform;
   if (allowDirect && submission.mode === "draft" && contentType === "article"
-    && (platform === "juejin" || platform === "tt")) {
+    && ["juejin", "tt", "dy"].includes(platform)) {
     const results = Array.isArray(submission.result?.results)
       ? submission.result.results.filter(item => item?.accountId === account.id) : [];
     if (results.length === 1 && results[0].exitCode === 0 && results[0].status === "draft") {
@@ -66,7 +68,8 @@ export function resolveSubmissionOpenTarget(submission, target, account, { allow
     && CONTENT_LIST_TYPES[platform]?.includes(contentType) && cfg.listIndex) {
     return { kind: "content-list", url: cfg.listIndex };
   }
-  return { kind: "backend", url: BACKEND_ENTRIES[platform] || cfg.index };
+  return { kind: "backend", url: platform === "dy" && contentType === "article"
+    ? DOUYIN_ARTICLE_ENTRY : BACKEND_ENTRIES[platform] || cfg.index };
 }
 
 export async function openSubmissionTarget(service, params) {
@@ -92,7 +95,7 @@ export async function openSubmissionTarget(service, params) {
   }
   if ((submission.state === "unknown" || (submission.state === "completed" || submission.state === "failed")
       && submission.mode === "draft" && (submission.contentType || "video") === "article"
-      && target.platform === "tt")
+      && ["tt", "dy"].includes(target.platform))
     && focusOpenPublishWindow(account.partition, submission.id)) {
     return { kind: "review-window" };
   }

@@ -44,6 +44,7 @@ await build({
   stdin: {
     contents: `
       export { registerPublishWindow, hasOpenPublishWindow, hasAnyOpenPublishWindow, afterPublishWindowClosed,
+        focusConflictingPublishWindows, focusOpenPublishWindow,
         isToutiaoWorkerTask, toutiaoFailureMessage } from "./src/main/services/publishWindowRegistry.js";
       export { replyPublishFailure, replyPublishOutcome } from "./src/main/services/upLoad/publishOutcome.js";
       export { PublisherAccounts } from "./src/main/publisher-worker/accounts.js";
@@ -74,16 +75,23 @@ class FakeWindow extends EventEmitter {
     this.destroyed = false;
     this.shown = 0;
     this.focused = 0;
+    this.restored = 0;
+    this.minimized = false;
+    this.hidden = true;
     this.url = "";
+    this.navigation = [];
     this.webContents = {
       setWindowOpenHandler() {}, on() {}, setUserAgent() {}, isDestroyed: () => this.destroyed,
+      getURL: () => this.url,
     };
     created.push(this);
   }
   isDestroyed() { return this.destroyed; }
-  show() { this.shown++; }
+  isMinimized() { return this.minimized; }
+  restore() { this.minimized = false; this.restored++; }
+  show() { this.hidden = false; this.shown++; }
   focus() { this.focused++; }
-  async loadURL(url) { this.url = url; }
+  async loadURL(url) { this.navigation.push(url); this.url = url; }
   close() {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -155,9 +163,103 @@ async function waitForWindow(previousCount) {
   legacyWithoutPartition.close();
   assert.strictEqual(tools.hasActivePublishTasks(), false);
 
+  // 冲突恢复只显示原页面，全部同账号存活窗口都可由用户自行核对关闭。
+  const minimizedConflict = new FakeWindow();
+  minimizedConflict.minimized = true;
+  minimizedConflict.url = "https://creator.example/existing-draft";
+  const hiddenConflict = new FakeWindow();
+  hiddenConflict.url = "https://creator.example/other-draft";
+  const unrelatedConflict = new FakeWindow();
+  const staleConflict = new FakeWindow();
+  tools.registerPublishWindow(partitionA, minimizedConflict, "old-a");
+  tools.registerPublishWindow(partitionA, hiddenConflict, "old-b");
+  tools.registerPublishWindow(partitionA, staleConflict, "stale");
+  tools.registerPublishWindow(partitionB, unrelatedConflict, "unrelated");
+  staleConflict.destroyed = true; // 销毁事件遗漏的旧记录也应被清理。
+  assert.strictEqual(tools.focusConflictingPublishWindows(partitionA), true);
+  assert.strictEqual(minimizedConflict.restored, 1);
+  assert.strictEqual(hiddenConflict.restored, 0);
+  for (const win of [minimizedConflict, hiddenConflict]) {
+    assert.strictEqual(win.shown, 1);
+    assert.strictEqual(win.focused, 1);
+    assert.strictEqual(win.isDestroyed(), false);
+    assert.deepStrictEqual(win.navigation, [], "置前不能重新加载或导航旧稿件");
+  }
+  assert.strictEqual(minimizedConflict.url, "https://creator.example/existing-draft");
+  assert.strictEqual(hiddenConflict.url, "https://creator.example/other-draft");
+  for (const win of [unrelatedConflict, staleConflict]) {
+    assert.strictEqual(win.shown, 0);
+    assert.strictEqual(win.focused, 0);
+  }
+  assert.strictEqual(tools.focusOpenPublishWindow(partitionA, "different-submission"), false,
+    "历史稿件入口仍必须严格核对提交身份");
+  assert.strictEqual(tools.focusOpenPublishWindow(partitionA, undefined), false);
+  assert.strictEqual(minimizedConflict.focused, 1);
+  assert.strictEqual(hiddenConflict.focused, 1);
+  minimizedConflict.close();
+  hiddenConflict.close();
+  assert.strictEqual(tools.focusConflictingPublishWindows(partitionA), false);
+  assert.strictEqual(tools.hasOpenPublishWindow(partitionA), false);
+  assert.strictEqual(tools.hasOpenPublishWindow(partitionB), true);
+  unrelatedConflict.close();
+
+  const accountWindow = new FakeWindow();
+  accountWindow.minimized = true;
+  accountWindow.url = "https://creator.example/unsaved-edit";
+  const otherAccountWindow = new FakeWindow();
+  accounts.windows.set(partitionA, accountWindow);
+  accounts.windows.set(partitionB, otherAccountWindow);
+  assert.throws(() => accounts.assertNoOpenWindow("a"), error =>
+    error.code === "account-window-open" && /已唤起.*本次提交未开始/u.test(error.message));
+  assert.strictEqual(accountWindow.restored, 1);
+  assert.strictEqual(accountWindow.shown, 1);
+  assert.strictEqual(accountWindow.focused, 1);
+  assert.strictEqual(accountWindow.isDestroyed(), false);
+  assert.strictEqual(accountWindow.url, "https://creator.example/unsaved-edit");
+  assert.deepStrictEqual(accountWindow.navigation, []);
+  assert.strictEqual(otherAccountWindow.focused, 0);
+  accountWindow.close();
+  assert.doesNotThrow(() => accounts.assertNoOpenWindow("a"));
+  assert.strictEqual(accounts.windows.has(partitionA), false, "过期账号窗口占用必须清理");
+  const replacementAccountWindow = new FakeWindow();
+  accounts.windows.set(partitionA, replacementAccountWindow);
+  assert.throws(() => accounts.assertNoOpenWindow("a"), error => error.code === "account-window-open");
+  assert.strictEqual(replacementAccountWindow.focused, 1, "重建后的同账号窗口仍可唤起");
+  replacementAccountWindow.close();
+  otherAccountWindow.close();
+  assert.doesNotThrow(() => accounts.assertNoOpenWindow("a"));
+  assert.doesNotThrow(() => accounts.assertNoOpenWindow("b"));
+
+  // 原生置前失败仍必须保留窗口占用，不能把聚焦异常当作允许提交。
+  const unFocusable = new FakeWindow();
+  unFocusable.focus = () => { throw new Error("fixture focus failure"); };
+  tools.registerPublishWindow(partitionA, unFocusable);
+  const originalWarn = console.warn;
+  try {
+    console.warn = () => {};
+    assert.throws(() => accounts.assertNoOpenWindow("a"), error =>
+      error.code === "account-window-open" && /仍在打开.*本次提交未开始/u.test(error.message));
+    assert.throws(() => accounts.assertIdle("a"), error => error.code === "account-window-open");
+    assert.strictEqual(tools.hasOpenPublishWindow(partitionA), true);
+    assert.strictEqual(unFocusable.isDestroyed(), false);
+    unFocusable.close();
+    const unFocusableDashboard = new FakeWindow();
+    unFocusableDashboard.show = () => { throw new Error("fixture show failure"); };
+    accounts.windows.set(partitionA, unFocusableDashboard);
+    assert.throws(() => accounts.assertNoOpenWindow("a"), error => error.code === "account-window-open");
+    assert.strictEqual(unFocusableDashboard.isDestroyed(), false);
+    assert.deepStrictEqual(unFocusableDashboard.navigation, []);
+    unFocusableDashboard.close();
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.doesNotThrow(() => accounts.assertNoOpenWindow("a"));
+
   const failedWindow = new FakeWindow();
   tools.registerPublishWindow(partitionA, failedWindow);
   assert.throws(() => accounts.assertIdle("a"), error => error.code === "account-window-open");
+  assert.strictEqual(failedWindow.shown, 1);
+  assert.strictEqual(failedWindow.focused, 1);
   await assert.rejects(accounts.openLogin({ id: "a" }), error => error.code === "account-window-open");
   await assert.rejects(accounts.openDashboard({ id: "a" }), error => error.code === "account-window-open");
   await assert.rejects(accounts.remove({ id: "a" }), error => error.code === "account-window-open");
@@ -176,6 +278,69 @@ async function waitForWindow(previousCount) {
   assert.doesNotThrow(() => accounts.assertNoOpenWindow("a"));
   assert.doesNotThrow(() => accounts.assertIdle("a"));
 
+  const preflightRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ebao-window-preflight-"));
+  try {
+    const service = new tools.PublisherWorkerService(preflightRoot);
+    const tt = service.store.addAccount({ displayName: "头条账号", platform: "tt", pt: "头条" });
+    const dy = service.store.addAccount({ displayName: "抖音账号", platform: "dy", pt: "抖音" });
+    const file = path.join(preflightRoot, "fixture.mp4");
+    fs.writeFileSync(file, "fixture video");
+    const params = { contentType: "video", mode: "publish", accountIds: [tt.id, dy.id],
+      workId: "window-preflight", title: "不应自动提交", file };
+    let loginChecks = 0;
+    let kicks = 0;
+    service.kick = () => { kicks++; };
+    service.accounts.check = async () => { loginChecks++; return { loginState: "logged-in" }; };
+    const retained = new FakeWindow();
+    retained.minimized = true;
+    tools.registerPublishWindow(tt.partition, retained, "old-submission");
+    await assert.rejects(service.createSubmission(params), error => error.code === "account-window-open");
+    assert.strictEqual(retained.restored, 1);
+    assert.strictEqual(retained.shown, 1);
+    assert.strictEqual(retained.focused, 1);
+    assert.strictEqual(retained.isDestroyed(), false);
+    assert.deepStrictEqual(retained.navigation, []);
+    assert.strictEqual(loginChecks, 0);
+    assert.strictEqual(service.store.submissionsRaw().length, 0);
+    assert.strictEqual(kicks, 0);
+    retained.close();
+
+    const dashboard = new FakeWindow();
+    service.accounts.windows.set(dy.partition, dashboard);
+    await assert.rejects(service.createSubmission(params), error => error.code === "account-window-open");
+    assert.strictEqual(dashboard.focused, 1);
+    assert.strictEqual(dashboard.isDestroyed(), false);
+    assert.strictEqual(loginChecks, 0);
+    assert.strictEqual(service.store.submissionsRaw().length, 0);
+    dashboard.close();
+
+    // 检查登录期间才出现的发布页，第二道 preflight 也须置前并阻断整单。
+    const lateWindow = new FakeWindow();
+    service.accounts.check = async ({ id }) => {
+      loginChecks++;
+      if (id === tt.id) tools.registerPublishWindow(tt.partition, lateWindow, "late-submission");
+      return { loginState: "logged-in" };
+    };
+    await assert.rejects(service.createSubmission(params), error => error.code === "account-window-open");
+    assert.strictEqual(lateWindow.focused, 1);
+    assert.strictEqual(lateWindow.isDestroyed(), false);
+    assert.strictEqual(service.store.submissionsRaw().length, 0);
+    assert.strictEqual(service.validatingAccounts.size, 0);
+    assert.strictEqual(kicks, 0);
+    assert.deepStrictEqual(globalThis.__publishedAccounts, [], "冲突恢复不能启动任何目标平台");
+    lateWindow.close();
+    assert.strictEqual(service.store.submissionsRaw().length, 0, "关闭窗口不能自动补交失败请求");
+    service.accounts.check = async () => ({ loginState: "logged-in" });
+    const accepted = await service.createSubmission(params);
+    assert.strictEqual(accepted.accepted, true);
+    assert.strictEqual(service.store.submissionsRaw().length, 1);
+    assert.strictEqual(kicks, 1, "用户关闭窗口并明确重新提交后才可进入队列");
+    assert.deepStrictEqual(globalThis.__publishedAccounts, []);
+    await service.dispose();
+  } finally {
+    fs.rmSync(preflightRoot, { recursive: true, force: true });
+  }
+
   const serviceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ebao-window-retention-"));
   try {
     const service = new tools.PublisherWorkerService(serviceRoot);
@@ -187,6 +352,10 @@ async function waitForWindow(previousCount) {
       workId: "blocked", file: "/tmp/unused.mp4", title: "阻断测试", mode: "draft",
     }, [tt, dy]);
     await service.drain();
+    assert.strictEqual(retained.shown, 1, "排队后遇到旧发布页也必须唤起原窗口");
+    assert.strictEqual(retained.focused, 1);
+    assert.strictEqual(retained.isDestroyed(), false);
+    assert.deepStrictEqual(retained.navigation, []);
     assert.strictEqual(service.store.submission(blocked.id).state, "failed");
     assert.match(service.store.submission(blocked.id).message, /未开始/u);
     assert.deepStrictEqual(globalThis.__publishedAccounts, []);

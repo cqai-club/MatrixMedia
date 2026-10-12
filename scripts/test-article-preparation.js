@@ -57,11 +57,55 @@ const root = path.join(__dirname, "..");
   assert.ok(toutiao.content.body.includes("【待手动上传图片 2：外链】"));
   assert.ok(toutiao.messages.some(value => value.includes("图片占位")));
   assert.ok(toutiao.messages.some(value => value.includes("封面不会自动上传")));
+  const douyin = preparation.prepareTargetArticle({ ...original, title: `${"标".repeat(29)}😀尾`, assets: [assets[2]], coverAssetId: first }, "dy");
+  assert.strictEqual(douyin.content.title, "标".repeat(29));
+  assert.strictEqual(douyin.content.coverAssetId, third);
+  assert.match(douyin.content.body, /【待手动上传图片 1：保留】/u);
+  assert.ok(douyin.messages.some(value => value.includes("抖音正文已保留")));
+  assert.ok(douyin.messages.some(value => value.includes("抖音封面不会自动上传")));
+  assert.ok(douyin.messages.some(value => value.includes("抖音标题已截为 30 字")));
+  assert.strictEqual(douyin.content.summary, original.summary, "Worker 不得直接截断摘要");
+  assert.ok(!douyin.messages.some(value => value.includes("摘要已截")));
+  const minimalDy = { ...original, title: "抖音文章", body: "正文", summary: "", assets: [], coverAssetId: null, creativeStatement: "none" };
+  assert.deepStrictEqual(preparation.prepareTargetArticle(minimalDy, "dy").messages, []);
+  for (const summary of ["", "独立摘要", "摘".repeat(30), `${"摘".repeat(28)}😀`]) {
+    const selected = { ...minimalDy, summary };
+    const prepared = preparation.prepareTargetArticle(selected, "dy");
+    assert.strictEqual(prepared.content.summary, summary);
+    assert.deepStrictEqual(prepared.messages, []);
+    assert.strictEqual(preparation.modeForPreparedContent("publish", "article", prepared.messages), "publish");
+  }
+  const summaryBoundary = { ...minimalDy, summary: `${"摘".repeat(29)}😀尾` };
+  const untouchedSummary = preparation.prepareTargetArticle(summaryBoundary, "dy");
+  assert.strictEqual(untouchedSummary.content.summary, summaryBoundary.summary, "必须保留完整摘要，等待模型压缩");
+  assert.deepStrictEqual(untouchedSummary.messages, []);
+  assert.strictEqual(summaryBoundary.summary, `${"摘".repeat(29)}😀尾`);
+  assert.strictEqual(preparation.modeForPreparedContent("publish", "article", untouchedSummary.messages), "publish");
+  assert.throws(() => targets.validateTargetContent(summaryBoundary,
+    { platform: "dy", displayName: "抖音" }, "article", capabilities.platformCapabilities(), null), /请先用模型压缩至30字以内/u);
+  const summaryAdjustments = [];
+  const summarizedContent = { ...minimalDy, summary: "主稿摘要".repeat(10),
+    platformVariants: { dy: { summary: "模型生成的精炼摘要" } } };
+  const summarySource = JSON.stringify(summarizedContent);
+  const projectedSummary = targets.validateTargetContent(summarizedContent,
+  { platform: "dy", displayName: "抖音" }, "article", capabilities.platformCapabilities(), null, summaryAdjustments);
+  assert.strictEqual(projectedSummary.summary, "模型生成的精炼摘要");
+  assert.deepStrictEqual(summaryAdjustments, []);
+  assert.strictEqual(JSON.stringify(summarizedContent), summarySource);
+  assert.throws(() => targets.validateTargetContent({ ...minimalDy, summary: "短摘要",
+    platformVariants: { dy: { summary: "平台摘要".repeat(10) } } },
+  { platform: "dy", displayName: "抖音" }, "article", capabilities.platformCapabilities(), null), /请先用模型压缩至30字以内/u);
+  assert.strictEqual(targets.validateTargetContent({ ...minimalDy, body: "文".repeat(20000) },
+    { platform: "dy", displayName: "抖音" }, "article", capabilities.platformCapabilities(), null).body.length, 20000);
+  assert.throws(() => targets.validateTargetContent({ ...minimalDy, body: "文".repeat(20001) },
+    { platform: "dy", displayName: "抖音" }, "article", capabilities.platformCapabilities(), null), /20000 字/u);
+  assert.throws(() => targets.validateTargetContent({ ...minimalDy, body: "文".repeat(19990), creativeStatement: "ai_generated" },
+    { platform: "dy", displayName: "抖音" }, "article", capabilities.platformCapabilities(), null), /含内容声明/u);
   const trickyUrls = preparation.prepareTargetArticle({ ...original, body:
     '前 ![标题](https://example.com/a.png "has ) paren") 中 ![尖括号](<https://example.com/a).png>) 后' }, "juejin");
   assert.strictEqual(trickyUrls.content.body, "前  中  后");
   assert.ok(trickyUrls.messages.some(value => value.includes("2 张正文图片")));
-  for (const platform of ["juejin", "blbl", "tt", "bjh"]) {
+  for (const platform of ["juejin", "blbl", "tt", "dy", "bjh"]) {
     const noSelectedAssets = preparation.prepareTargetArticle({ ...original,
       title: "标题", body: "正文", assets: [], coverAssetId: first }, platform);
     assert.strictEqual(noSelectedAssets.content.coverAssetId, null);
@@ -119,7 +163,7 @@ const root = path.join(__dirname, "..");
     // Exercise the real service acceptance path while replacing only browser/account I/O.
     const serviceBundle = path.join(directory, "service.cjs");
     const articleFunctions = ["runBilibiliArticle", "runJuejinArticle", "runXhsImageNote", "runToutiaoArticle",
-      "runKuaishouImageNote", "runDouyinImageNote", "runBaijiahaoArticle", "runWechatOfficialArticle"];
+      "runKuaishouImageNote", "runDouyinImageNote", "runDouyinArticle", "runBaijiahaoArticle", "runWechatOfficialArticle"];
     const articleStub = articleFunctions.map(name => name === "runJuejinArticle"
       ? `export async function ${name}(account, submission, manifest) {
           globalThis.__articleDispatch = { account, submission, manifest };
@@ -197,6 +241,25 @@ const root = path.join(__dirname, "..");
     { platform: "tt", displayName: "头条" }, "article", capabilities.platformCapabilities(), null);
     assert.deepStrictEqual(coverlessToutiao.assets, []);
     assert.strictEqual(coverlessToutiao.coverAssetId, null);
+
+    const dyAccount = service.store.addAccount({ displayName: "抖音账号", platform: "dy", pt: "抖音" });
+    const longSummaryManifest = { ...sourceManifest, title: "抖音文章", body: "纯文本正文",
+      assets: [], coverAssetId: null, summary: "需由模型压缩的原稿摘要".repeat(5) };
+    const beforeRejectedSummary = service.store.listSubmissions().length;
+    fs.writeFileSync(path.join(source, "manifest.json"), JSON.stringify(longSummaryManifest));
+    await assert.rejects(service.createSubmission({ contentType: "article", mode: "publish",
+      accountIds: [dyAccount.id], contentDirectory: source, contentId, revision: 1 }), /请先用模型压缩至30字以内/u);
+    assert.strictEqual(service.store.listSubmissions().length, beforeRejectedSummary, "未压缩摘要不得创建队列任务");
+    const compressedManifest = { ...longSummaryManifest, platformVariants: { dy: { summary: "模型生成的完整短摘要" } } };
+    const compressedSource = JSON.stringify(compressedManifest);
+    fs.writeFileSync(path.join(source, "manifest.json"), compressedSource);
+    const acceptedCompressed = await service.createSubmission({ contentType: "article", mode: "publish",
+      accountIds: [dyAccount.id], contentDirectory: source, contentId, revision: 1 });
+    assert.strictEqual(acceptedCompressed.submission.mode, "publish", "模型摘要不会强制转换为草稿");
+    assert.deepStrictEqual(acceptedCompressed.submission.adjustments || [], []);
+    const compressedSnapshot = service.store.submission(acceptedCompressed.submission.id).snapshotDirectory;
+    assert.strictEqual(fs.readFileSync(path.join(source, "manifest.json"), "utf8"), compressedSource);
+    assert.strictEqual(fs.readFileSync(path.join(compressedSnapshot, "manifest.json"), "utf8"), compressedSource);
   } finally {
     delete globalThis.__articleDispatch;
     fs.rmSync(directory, { recursive: true, force: true });

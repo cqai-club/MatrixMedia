@@ -62,7 +62,7 @@ async function main() {
     export const ipcMain = { on: (_channel, handler) => { globalThis.__loginFixture.handler = handler; } };
     export const safeStorage = {}; export class BrowserWindow {}`],
     ["../services/proxyConfig.js", "export const applyAccountProxyToSession = async () => {};"],
-    ["../services/publishWindowRegistry.js", "export const hasOpenPublishWindow = () => false;"],
+    ["../services/publishWindowRegistry.js", "export const hasOpenPublishWindow = () => false; export const focusConflictingPublishWindows = () => false;"],
     ["./wechat-official.js", "export class WechatOfficialClient {}"],
   ]);
   const originalLog = console.log;

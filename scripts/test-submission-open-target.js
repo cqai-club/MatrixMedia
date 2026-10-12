@@ -11,6 +11,7 @@ const id = {
   juejin: "22222222-2222-4222-8222-222222222222",
   toutiao: "33333333-3333-4333-8333-333333333333",
   other: "44444444-4444-4444-8444-444444444444",
+  douyin: "55555555-5555-4555-8555-555555555555",
 };
 
 function makeSubmission(platform = "juejin", accountId = id.juejin, overrides = {}) {
@@ -93,6 +94,37 @@ class FakeWindow extends EventEmitter {
   assert.deepStrictEqual(resolveSubmissionOpenTarget(ttDraft, ttDraft.targets[0], toutiao), {
     kind: "draft", url: "https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=draft-1",
   });
+  const douyin = { id: id.douyin, platform: "dy", pt: "抖音", partition: "persist:test_douyin", displayName: "抖音号" };
+  const dyUrl = "https://creator.douyin.com/creator-micro/content/post/article?enter_from=draft&creation_id=123&init_timestamp=1791520000";
+  const dyDraft = makeSubmission("dy", id.douyin, { result: { results: [
+    { accountId: id.douyin, exitCode: 0, status: "draft", draftUrl: `${dyUrl}&unused=ignored` },
+  ] } });
+  assert.deepStrictEqual(resolveSubmissionOpenTarget(dyDraft, dyDraft.targets[0], douyin), { kind: "draft", url: dyUrl });
+  assert.deepStrictEqual(resolveSubmissionOpenTarget(dyDraft, dyDraft.targets[0], douyin, { allowDirect: false }), {
+    kind: "backend", url: "https://creator.douyin.com/creator-micro/content/upload?default-tab=5",
+  }, "官方文章入口只提供最近草稿提示，不能冒充草稿列表");
+  const dyPublish = makeSubmission("dy", id.douyin, { mode: "publish" });
+  assert.deepStrictEqual(resolveSubmissionOpenTarget(dyPublish, dyPublish.targets[0], douyin), {
+    kind: "content-list", url: "https://creator.douyin.com/creator-micro/content/manage",
+  });
+  for (const url of [dyUrl.replace("https:", "http:"), dyUrl.replace("creator.douyin.com", "evil.example"),
+    dyUrl.replace("/post/article", "/post/video"), dyUrl.replace("creation_id=123", "creation_id="),
+    `${dyUrl}&creation_id=456`, `${dyUrl}&init_timestamp=5`, `${dyUrl}#anchor`,
+    dyUrl.replace("enter_from=draft", "enter_from=publish_page"), dyUrl.replace("init_timestamp=1791520000", "init_timestamp=not-number"),
+    dyUrl.replace("creator.douyin.com", "user@creator.douyin.com")]) {
+    const unsafe = makeSubmission("dy", id.douyin, { result: { results: [
+      { accountId: id.douyin, exitCode: 0, status: "draft", draftUrl: url },
+    ] } });
+    assert.strictEqual(resolveSubmissionOpenTarget(unsafe, unsafe.targets[0], douyin).kind, "backend", url);
+  }
+  const retainedDyWindow = new FakeWindow();
+  registerPublishWindow(douyin.partition, retainedDyWindow, dyDraft.id);
+  const dyService = makeService(dyDraft, douyin);
+  assert.deepStrictEqual(await openSubmissionTarget(dyService.service, {
+    submissionId: dyDraft.id, accountId: id.douyin,
+  }), { kind: "review-window" });
+  assert.strictEqual(dyService.calls.length, 0, "手动配图草稿应直接聚焦保留的账号窗口");
+  retainedDyWindow.close();
   const multiTarget = makeSubmission("juejin", id.juejin, {
     targets: [
       { accountId: id.juejin, platform: "juejin" },

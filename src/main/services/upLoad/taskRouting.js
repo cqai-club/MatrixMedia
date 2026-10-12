@@ -1,6 +1,7 @@
 "use strict";
 
 const ARTICLE = {
+  抖音: "dy",
   掘金: "juejin",
   哔哩哔哩: "blbl",
   头条: "tt",

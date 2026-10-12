@@ -14,7 +14,7 @@ import { captureContentPackage, projectContentForPlatform, readContentPackage, r
 import {
   runBilibiliArticle, runJuejinArticle, runXhsImageNote, runToutiaoArticle,
   runKuaishouImageNote, runDouyinImageNote,
-  runBaijiahaoArticle, runWechatOfficialArticle,
+  runBaijiahaoArticle, runDouyinArticle, runWechatOfficialArticle,
 } from "./article.js";
 import { validateTargetContent } from "./target-content.js";
 import { modeForPreparedContent } from "./article-preparation.js";
@@ -269,6 +269,8 @@ export class PublisherWorkerService {
                 outcome = await runJuejinArticle(account, submission, effective);
               } else if (account.platform === "blbl" && submission.contentType === "article") {
                 outcome = await runBilibiliArticle(account, submission, effective);
+              } else if (account.platform === "dy" && submission.contentType === "article") {
+                outcome = await runDouyinArticle(account, submission, effective);
               } else if (account.platform === "tt" && submission.contentType === "article") {
                 outcome = await runToutiaoArticle(account, submission, effective);
                 if (outcome.exitCode === 0 && submission.adjustments?.some(item => item.accountId === account.id

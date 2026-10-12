@@ -122,7 +122,7 @@ function removeImages(body, shouldRemove) {
   return { body: result.body, removed: result.replaced };
 }
 
-function toutiaoImagePlaceholder(image, number) {
+function manualArticleImagePlaceholder(image, number) {
   const alt = String(image.alt || "").replace(/[\r\n\t【】<>\[\]()*_`]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 60);
   return `\n\n【待手动上传图片 ${number}${alt ? `：${alt}` : ""}】\n\n`;
 }
@@ -168,12 +168,12 @@ export function prepareTargetArticle(content, platform) {
       };
       messages.push("掘金分类未填写，已使用默认分类「前端」");
     }
-  } else if (["tt", "bjh", "wxmp"].includes(platform)) {
-    if (platform === "tt") {
-      const placeholders = replaceImages(result.body, toutiaoImagePlaceholder);
+  } else if (["tt", "dy", "bjh", "wxmp"].includes(platform)) {
+    if (["tt", "dy"].includes(platform)) {
+      const placeholders = replaceImages(result.body, manualArticleImagePlaceholder);
       result.body = placeholders.body;
       message(messages, placeholders.replaced.length > 0,
-        `头条正文已保留 ${placeholders.replaced.length} 处图片占位，请在草稿窗口手动上传`);
+        `${platform === "dy" ? "抖音" : "头条"}正文已保留 ${placeholders.replaced.length} 处图片占位，请在草稿窗口手动上传`);
     }
     const cleaned = removeImages(result.body, image => {
       if (image.kind === "html") return true;
@@ -217,19 +217,23 @@ export function prepareTargetArticle(content, platform) {
     } else if (!assetsById.has(result.coverAssetId)) {
       if (result.assets.length) {
         result.coverAssetId = result.assets[0].id;
-        messages.push(platform === "tt" ? "已以首张图片作为头条封面参考" : "已将所选第一张图片设为封面");
+        messages.push(["tt", "dy"].includes(platform) ? `已以首张图片作为${platform === "dy" ? "抖音" : "头条"}封面参考` : "已将所选第一张图片设为封面");
       } else if (result.coverAssetId) {
         result.coverAssetId = null;
         messages.push("已清除不在所选素材中的封面");
       }
     }
-    if (platform === "tt" && result.coverAssetId) {
-      messages.push("头条封面不会自动上传，请在草稿窗口手动设置");
+    if (["tt", "dy"].includes(platform) && result.coverAssetId) {
+      messages.push(`${platform === "dy" ? "抖音" : "头条"}封面不会自动上传，请在草稿窗口手动设置`);
     }
-    // 头条不传独立摘要和标签，静默跳过，不把这些信息变成草稿修整项。
-    if (platform !== "tt" && Array.isArray(result.tags) && result.tags.some(tag => String(tag || "").trim())) {
+    // 头条不传独立摘要；头条和抖音标签仍保留在源稿。
+    if (!["tt", "dy"].includes(platform) && Array.isArray(result.tags) && result.tags.some(tag => String(tag || "").trim())) {
       messages.push("该平台文章适配器暂不写入标签；标签仍保留在本地草稿");
     }
+  }
+  if (platform === "dy" && result.title.length > 30) {
+    result.title = truncateUtf16(result.title, 30);
+    messages.push("抖音标题已截为 30 字");
   }
   return { content: result, messages };
 }

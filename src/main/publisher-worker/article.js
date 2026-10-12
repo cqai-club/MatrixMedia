@@ -7,25 +7,14 @@ import ptConfig from "../config/ptConfig";
 import { cancelPuppeteerTasks, runPuppeteerTask } from "../services/puppeteerFile";
 import { afterPublishWindowClosed, hasOpenPublishWindow } from "../services/publishWindowRegistry.js";
 import { PublisherProtocolError } from "./protocol.js";
+import { DOUYIN_ARTICLE_ENTRY } from "./douyin-article-url.js";
+import { withDisclosure } from "./content-disclosure.js";
+export { withDisclosure } from "./content-disclosure.js";
 import { articleImageIds } from "./article-content.js";
 import { publisherUserAgent } from "./userAgent.js";
 import { WechatOfficialClient } from "./wechat-official.js";
 
 const TIMEOUT_MS = 25 * 60 * 1000;
-const DISCLOSURES = {
-  none: "",
-  ai_generated: "本文包含 AI 生成内容",
-  fiction: "虚构演绎，仅供娱乐",
-  marketing: "营销推广",
-  personal_opinion: "个人观点，仅供参考",
-  repost: "转载",
-  self_made_no_repost: "自制，禁止转载",
-};
-
-export function withDisclosure(body, statement) {
-  const text = DISCLOSURES[statement] || "";
-  return text ? `${body.trimEnd()}\n\n> 内容声明：${text}` : body;
-}
 
 export function runWechatOfficialArticle(account, submission, manifest, credentials, client = new WechatOfficialClient()) {
   if (account.platform !== "wxmp") throw new PublisherProtocolError("unsupported-platform", "公众号适配器不可用");
@@ -65,7 +54,7 @@ function runWorkerTask(payload, mode) {
             status: response.status === true ? mode === "draft" ? "draft" : "success" : "failed",
             message: response.message || "",
             ...(response.status === true && mode === "draft"
-              && ["掘金", "头条"].includes(payload.pt) && typeof response.draftUrl === "string"
+              && ["掘金", "头条", "抖音"].includes(payload.pt) && typeof response.draftUrl === "string"
               ? { draftUrl: response.draftUrl } : {}),
           });
         },
@@ -239,8 +228,8 @@ export function runBilibiliArticle(account, submission, manifest) {
 
 function runWebArticle(account, submission, manifest, url) {
   const cfg = ptConfig[account.pt];
-  const manualToutiaoImages = account.platform === "tt";
-  const usedImages = new Set(manualToutiaoImages ? [] : articleImageIds(manifest));
+  const manualArticleImages = ["tt", "dy"].includes(account.platform);
+  const usedImages = new Set(manualArticleImages ? [] : articleImageIds(manifest));
   const payload = {
     taskId: Date.now() + Math.random(),
     submissionId: submission.id,
@@ -250,15 +239,17 @@ function runWebArticle(account, submission, manifest, url) {
       title: manifest.title,
       content: withDisclosure(manifest.body, manifest.creativeStatement),
       ...(account.platform === "tt" ? {} : { summary: manifest.summary || "" }),
-      // 头条和百家号文章标签写入未验收；不传给页面适配器，草稿标签供其他平台使用。
+      // 头条、抖音和百家号文章标签写入未验收；源稿仍保留标签。
       images: manifest.assets.filter(asset => usedImages.has(asset.id)).map(asset => ({
         id: asset.id, mime: asset.mime, path: path.join(submission.snapshotDirectory, "assets", asset.id),
       })),
-      coverPath: !manualToutiaoImages && manifest.coverAssetId
+      coverPath: !manualArticleImages && manifest.coverAssetId
         ? path.join(submission.snapshotDirectory, "assets", manifest.coverAssetId) : "",
-      coverMime: manualToutiaoImages ? "" : manifest.assets.find(asset => asset.id === manifest.coverAssetId)?.mime || "",
+      coverMime: manualArticleImages ? "" : manifest.assets.find(asset => asset.id === manifest.coverAssetId)?.mime || "",
     },
     url,
+    ...(account.platform === "dy" ? { manualArticleAssets: manifest.assets.length > 0
+      || /【待手动上传图片 /u.test(manifest.body) } : {}),
     show: false,
     mmCliSuppressWindow: true,
     closeWindowAfterPublish: true,
@@ -282,4 +273,18 @@ export function runToutiaoArticle(account, submission, manifest) {
 export function runBaijiahaoArticle(account, submission, manifest) {
   if (account.platform !== "bjh") throw new PublisherProtocolError("unsupported-platform", "百家号文章适配器不可用");
   return runWebArticle(account, submission, manifest, "https://baijiahao.baidu.com/builder/rc/edit?type=news");
+}
+
+export function runDouyinArticle(account, submission, manifest) {
+  if (account.platform !== "dy" || !["draft", "publish"].includes(submission.mode)) {
+    throw new PublisherProtocolError("unsupported-platform", "抖音文章提交方式无效");
+  }
+  if (withDisclosure(manifest.body, manifest.creativeStatement).length > 20000) {
+    throw new PublisherProtocolError("invalid-content", "抖音文章正文（含内容声明）不能超过 20000 字");
+  }
+  if (String(manifest.summary || "").length > 30) {
+    throw new PublisherProtocolError("invalid-content", "抖音文章摘要不能超过 30 字，请先用模型压缩至30字以内");
+  }
+  // 官方创作者前端的 long_article_upload 入口；tab=4 是 VR，文章使用 tab=5。
+  return runWebArticle(account, submission, manifest, DOUYIN_ARTICLE_ENTRY);
 }

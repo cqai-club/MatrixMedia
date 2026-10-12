@@ -25,6 +25,8 @@ import xhsImageNoteHandler from "./upLoad/xhsImageNote.js";
 import ksImageNoteHandler from "./upLoad/ksImageNote.js";
 import dyImageNoteHandler from "./upLoad/dyImageNote.js";
 import blblArticleHandler from "./upLoad/blblArticle.js";
+import dyArticleHandler from "./upLoad/dyArticle.js";
+import { isDouyinArticlePageUrl } from "./upLoad/dyArticle.js";
 import ttArticleHandler from "./upLoad/ttArticle.js";
 import bjhArticleHandler from "./upLoad/bjhArticle.js";
 import { publisherHandlerKey, usesManualToutiaoArticleWindow } from "./upLoad/taskRouting.js";
@@ -191,6 +193,9 @@ function isExpectedPublishUrl(data, currentUrl) {
         && current.pathname === "/article/publish/video"
         && current.searchParams.get("tabType") === "2";
     } catch { return false; }
+  }
+  if (data?.pt === "抖音" && data?.textType === "article") {
+    return isDouyinArticlePageUrl(currentUrl);
   }
   if (data?.pt === "抖音" && data?.textType === "image-note") {
     try {
@@ -1002,6 +1007,8 @@ async function doUpload(data, transport, queueDone, runtimeTask) {
             const key = publisherHandlerKey(data);
             const action = key === "article:blbl:draft" || key === "article:blbl:publish"
               ? blblArticleHandler
+              : key === "article:dy:draft" || key === "article:dy:publish"
+                ? dyArticleHandler
               : key === "article:tt:draft" || key === "article:tt:publish"
                 ? ttArticleHandler
                 : key === "article:bjh:draft" || key === "article:bjh:publish"

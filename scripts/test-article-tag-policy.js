@@ -43,13 +43,14 @@ const { build } = require("esbuild");
       { platform: "bjh", pt: "百家号", run: adapters.runBaijiahaoArticle },
       { platform: "juejin", pt: "掘金", run: adapters.runJuejinArticle },
       { platform: "blbl", pt: "哔哩哔哩", run: adapters.runBilibiliArticle },
+      { platform: "dy", pt: "抖音", run: adapters.runDouyinArticle },
     ];
     globalThis.__articleTagPayloads = [];
     for (const account of accounts) {
       const result = await account.run({ ...account, partition: "persist:test", id: "test" }, submission, manifest);
       assert.strictEqual(result.status, "draft");
     }
-    const [toutiao, baijiahao, juejin, bilibili] = globalThis.__articleTagPayloads;
+    const [toutiao, baijiahao, juejin, bilibili, douyin] = globalThis.__articleTagPayloads;
     assert.strictEqual(Object.hasOwn(toutiao.data, "tags"), false);
     assert.strictEqual(Object.hasOwn(toutiao.data, "summary"), false);
     assert.strictEqual(toutiao.data.content, "正文");
@@ -65,6 +66,29 @@ const { build } = require("esbuild");
     assert.strictEqual(silentMetadata.publishToDraft, false);
     assert.strictEqual(Object.hasOwn(silentMetadata.data, "tags"), false);
     assert.strictEqual(Object.hasOwn(silentMetadata.data, "summary"), false);
+    assert.strictEqual(douyin.url, "https://creator.douyin.com/creator-micro/content/upload?default-tab=5");
+    assert.strictEqual(douyin.partition, "persist:test");
+    assert.strictEqual(douyin.publishOptions.maxAttempts, 1);
+    assert.strictEqual(douyin.data.summary, "主稿摘要");
+    assert.strictEqual(Object.hasOwn(douyin.data, "tags"), false);
+    assert.strictEqual(douyin.data.content, "正文");
+    assert.deepStrictEqual(prepareTargetArticle(manifest, "dy").messages, []);
+    for (const summary of ["", "摘".repeat(30), `${"摘".repeat(28)}😀`]) {
+      await adapters.runDouyinArticle({ platform: "dy", pt: "抖音", partition: "persist:test", id: "test" },
+        submission, { ...manifest, summary });
+      assert.strictEqual(globalThis.__articleTagPayloads.at(-1).data.summary, summary);
+      assert.strictEqual(Object.hasOwn(globalThis.__articleTagPayloads.at(-1).data, "tags"), false);
+    }
+    const originalLongSummary = { ...manifest, summary: `${"摘".repeat(29)}😀尾` };
+    const payloadsBeforeInvalidSummary = globalThis.__articleTagPayloads.length;
+    assert.throws(() => adapters.runDouyinArticle({ platform: "dy", pt: "抖音" }, submission, originalLongSummary), /请先用模型压缩至30字以内/u);
+    assert.strictEqual(globalThis.__articleTagPayloads.length, payloadsBeforeInvalidSummary, "长摘要不得进入浏览器任务");
+    const shortSummary = prepareTargetArticle({ ...originalLongSummary, summary: "模型压缩后的完整短摘要" }, "dy");
+    await adapters.runDouyinArticle({ platform: "dy", pt: "抖音", partition: "persist:test", id: "test" },
+      { ...submission, mode: modeForPreparedContent("publish", "article", shortSummary.messages) }, shortSummary.content);
+    assert.strictEqual(globalThis.__articleTagPayloads.at(-1).data.summary, "模型压缩后的完整短摘要");
+    assert.strictEqual(globalThis.__articleTagPayloads.at(-1).publishToDraft, false);
+    assert.strictEqual(originalLongSummary.summary, `${"摘".repeat(29)}😀尾`);
     const imageId = "22222222-2222-4222-8222-222222222222";
     const withImage = { ...manifest, body: `开头\n\n![示意图](ebao-asset://${imageId})\n\n结尾`,
       coverAssetId: imageId, assets: [{ id: imageId, mime: "image/png", bytes: 100 }] };
@@ -78,6 +102,13 @@ const { build } = require("esbuild");
     assert.strictEqual(manual.data.coverPath, "");
     assert.strictEqual(manual.data.content, prepared.content.body);
     assert.strictEqual(withImage.body.includes(`![示意图](ebao-asset://${imageId})`), true);
+    const dyPrepared = prepareTargetArticle(withImage, "dy");
+    await adapters.runDouyinArticle({ platform: "dy", pt: "抖音", partition: "persist:test", id: "test" }, submission, dyPrepared.content);
+    const dyManual = globalThis.__articleTagPayloads.at(-1);
+    assert.deepStrictEqual(dyManual.data.images, []);
+    assert.strictEqual(dyManual.data.coverPath, "");
+    assert.strictEqual(dyManual.manualArticleAssets, true);
+    assert.strictEqual(dyManual.data.content, dyPrepared.content.body);
     assert.strictEqual(Object.hasOwn(baijiahao.data, "tags"), false);
     assert.strictEqual(baijiahao.data.summary, "主稿摘要");
     assert.strictEqual(juejin.data.tags, "AI 科技");

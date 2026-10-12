@@ -79,6 +79,24 @@ export function hasOpenPublishWindow(partition) {
   return Boolean(partition) && hasLiveWindow(partition);
 }
 
+/** 提交遇到同账号窗口占用时，仅唤起原窗口供用户核对，不改变稿件或继续提交。 */
+export function focusConflictingPublishWindows(partition) {
+  if (!partition || !hasLiveWindow(partition)) return false;
+  let focused = false;
+  for (const win of windowsByPartition.get(partition) || []) {
+    if (win.isDestroyed()) continue;
+    try {
+      if (win.isMinimized?.()) win.restore();
+      win.show?.();
+      win.focus();
+      focused = true;
+    } catch (error) {
+      console.warn("唤起已有发布窗口失败:", error?.message || error);
+    }
+  }
+  return focused;
+}
+
 /** Bring a retained review window forward without changing its page or session. */
 export function focusOpenPublishWindow(partition, submissionId) {
   if (!partition || !submissionId || !hasLiveWindow(partition)) return false;

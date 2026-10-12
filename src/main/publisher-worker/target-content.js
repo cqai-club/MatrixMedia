@@ -4,6 +4,7 @@ import { PublisherProtocolError } from "./protocol.js";
 import { articleImageIds } from "./article-content.js";
 import { prepareTargetArticle } from "./article-preparation.js";
 import { projectContentForPlatform } from "./content-package.js";
+import { withDisclosure } from "./content-disclosure.js";
 
 /** Validate the exact content the selected account will receive. */
 export function validateTargetContent(manifest, account, contentType, capabilities, wechatClient, adjustmentMessages) {
@@ -22,6 +23,13 @@ export function validateTargetContent(manifest, account, contentType, capabiliti
   if (content.coverAssetId && !content.assets.some(asset => asset.id === content.coverAssetId)) {
     throw new PublisherProtocolError("invalid-content", `${account.displayName}封面不在所选图片中`);
   }
+  if (contentType === "article" && account.platform === "dy"
+    && withDisclosure(content.body, content.creativeStatement).length > 20000) {
+    throw new PublisherProtocolError("invalid-content", "抖音文章正文（含内容声明）不能超过 20000 字");
+  }
+  if (contentType === "article" && account.platform === "dy" && String(content.summary || "").length > 30) {
+    throw new PublisherProtocolError("invalid-content", "抖音文章摘要不能超过 30 字，请先用模型压缩至30字以内");
+  }
   if (contentType === "article" && !String(content.body).trim()) {
     throw new PublisherProtocolError("invalid-content", `${account.displayName}文章正文不能为空`);
   }
@@ -33,7 +41,7 @@ export function validateTargetContent(manifest, account, contentType, capabiliti
       && ["image/jpeg", "image/png"].includes(asset.mime))) {
     throw new PublisherProtocolError("invalid-content", "微信公众号文章需要一张 JPEG/PNG 封面");
   }
-  if (contentType === "article" && ["tt", "bjh", "wxmp"].includes(account.platform)) articleImageIds(content);
+  if (contentType === "article" && ["tt", "dy", "bjh", "wxmp"].includes(account.platform)) articleImageIds(content);
   if (contentType === "article" && account.platform === "wxmp") wechatClient.validate(content);
   if (contentType === "image-note" && account.platform === "wxmp") wechatClient.validateImageNote(content);
   const capability = capabilities.find(item => item.platform === account.platform);
