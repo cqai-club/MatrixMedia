@@ -42,6 +42,17 @@ export function accountWindowOptions(account, devTools) {
   };
 }
 
+export function revealAccountWindow(win) {
+  if (win.isDestroyed()) return false;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  // Windows 的隐藏启动状态可能覆盖首次 show；focus 不会显示隐藏窗口。
+  if (!win.isVisible()) win.show();
+  if (!win.isVisible()) return false;
+  win.focus();
+  return true;
+}
+
 export function attachAccountWindowHandlers(win, account, userAgent, devTools, options = {}) {
   const { BrowserWindow, homeUrl, isPopup = false, onTabCreated } = options;
   const contents = win.webContents;
