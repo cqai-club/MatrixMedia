@@ -10,7 +10,7 @@ import { hasOpenPublishWindow, focusConflictingPublishWindows } from "../service
 import { PublisherProtocolError } from "./protocol.js";
 import { publicAccount } from "./store.js";
 import { publisherUserAgent } from "./userAgent.js";
-import { accountWindowOptions, attachAccountWindowHandlers, allowsAccountWindowUrl } from "./account-windows.js";
+import { accountWindowOptions, attachAccountWindowHandlers, allowsAccountWindowUrl, revealAccountWindow } from "./account-windows.js";
 import { DOUYIN_PROFILE_SCRIPT, normalizeAccountName, profileNameScript } from "./account-name.js";
 import { WechatOfficialClient } from "./wechat-official.js";
 import { checkCookieLogin } from "../services/accountLoginState.js";
@@ -213,6 +213,9 @@ export class PublisherAccounts {
     if (existing && !existing.isDestroyed()) {
       // Login and dashboard intentionally share one account window/session.
       // Reusing the window must still navigate to the action the user chose.
+      if (!revealAccountWindow(existing)) {
+        throw new PublisherProtocolError("account-window-not-visible", "账号窗口未能显示，请重试登录或打开平台后台");
+      }
       let navigationFailed = false;
       if (existing.webContents.getURL() !== url) {
         try {
@@ -222,8 +225,6 @@ export class PublisherAccounts {
           console.warn("[publisher-worker] 账号窗口导航失败:", error && error.message);
         }
       }
-      if (existing.isMinimized()) existing.restore();
-      existing.focus();
       return { ok: true, reused: true, navigationFailed };
     }
     const ses = session.fromPartition(account.partition);
@@ -264,6 +265,9 @@ export class PublisherAccounts {
       },
     });
     if (debugAccountWindow) win.webContents.openDevTools({ mode: "detach" });
+    if (!revealAccountWindow(win)) {
+      throw new PublisherProtocolError("account-window-not-visible", "账号窗口未能显示，请重试登录或打开平台后台");
+    }
     let navigationFailed = false;
     try {
       await win.loadURL(url);
